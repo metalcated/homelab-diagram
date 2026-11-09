@@ -107,7 +107,9 @@ warnings, errors, and saved discovery counts. Expand **Response details** to
 inspect a sanitized inventory preview. **Follow latest output** controls automatic
 scrolling; turn it off to read an earlier entry while events continue arriving.
 The **Scan** menu reopens recorded output for the site's recent jobs, including
-failed or interrupted runs. Older jobs created before this feature have no
+failed or interrupted runs. In **History**, **View output** opens the matching run
+directly. New failure summaries identify the collector and its first reported
+problem, including the request path when available. Older jobs created before this feature have no
 detailed output. Output continues refreshing while a device/collector modal is open.
 
 HTTPS responses show status, size and timing. TrueNAS shows its WebSocket and

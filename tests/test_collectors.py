@@ -59,6 +59,17 @@ def redfish_fixture():
 
 
 class AdapterTests(unittest.TestCase):
+    def test_routeros_singleton_objects_and_optional_bad_table_keep_collected_inventory(self):
+        http=FakeHTTP({'/rest/system/identity':{'name':'real-format-router'},'/rest/system/resource':{'board-name':'Example router','version':'7.x'},'/rest/interface':[{'name':'ether1'}],'/rest/ip/neighbor':{'unexpected':'not-a-table'}})
+        result=dc.routeros(CFG,SECRET,'10.20.0.1',NETS,client=http)
+        self.assertTrue(any(a.get('name')=='real-format-router' and a.get('model')=='Example router' for a in result['assets']))
+        self.assertTrue(any('/rest/ip/neighbor' in warning for warning in result['warnings']))
+
+    def test_bad_required_routeros_response_identifies_the_exact_endpoint(self):
+        for value in ('not-a-record',{'error':'not-an-identity'},[None]):
+            with self.subTest(value=value),self.assertRaisesRegex(transport.CollectorError,'/rest/system/identity'):
+                dc.routeros(CFG,SECRET,'10.20.0.1',NETS,client=FakeHTTP({'/rest/system/identity':value}))
+
     def test_routeros_collects_many_devices_and_keeps_forwarding_as_reported(self):
         http=FakeHTTP({
           '/rest/system/identity':[{'name':'core'}],'/rest/system/resource':[{'board-name':'Example switch','version':'7.x'}],

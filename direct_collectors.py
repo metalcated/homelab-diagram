@@ -92,7 +92,15 @@ def routeros(config,secret,address,nets,stop=lambda:False,client=None,emit=None)
     def get(path,properties,required=False):
         url='/rest/'+path+'?'+urlencode({'.proplist':','.join(properties)})
         data=http.get(url) if required else b.optional(http,url,[])
-        if not isinstance(data,list) or any(not isinstance(row,dict) for row in data):raise CollectorError('Unexpected RouterOS response shape.')
+        singleton=path in ('system/identity','system/resource')
+        if singleton and isinstance(data,dict) and any(key in data for key in properties):data=[data]
+        if not isinstance(data,list) or any(not isinstance(row,dict) for row in data):
+            expected='an object or a list of objects' if singleton else 'a list of objects'
+            message=f'RouterOS /rest/{path}: unexpected response; expected {expected}.'
+            if required:raise CollectorError(message)
+            b.warnings.append(message)
+            if emit:emit('warning',message)
+            return []
         return data
     identity=get('system/identity',['name'],True)
     resource=get('system/resource',['board-name','version','cpu','cpu-count','total-memory'])

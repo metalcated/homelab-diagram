@@ -300,7 +300,7 @@ class Store:
             hosts = [dict(r) for r in db.execute("""SELECT h.*,a.name,a.role,a.model AS manual_model,a.notes
               FROM hosts h LEFT JOIN annotations a ON a.site=h.site AND a.address=h.address ORDER BY h.site,h.address""")]
             links = [dict(r) for r in db.execute("SELECT * FROM links ORDER BY site,src,dst")]
-            jobs = [dict(r) for r in db.execute("SELECT * FROM jobs ORDER BY started DESC, rowid DESC LIMIT 20")]
+            jobs = [dict(r) for r in db.execute("SELECT j.*,EXISTS(SELECT 1 FROM job_events e WHERE e.job=j.id) AS output_available FROM jobs j ORDER BY j.started DESC,j.rowid DESC LIMIT 20")]
             runs = [dict(r) for r in db.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 20")]
             demo = db.execute("SELECT value FROM settings WHERE key='demo'").fetchone()
             inventory=asset_inventory.state(db)

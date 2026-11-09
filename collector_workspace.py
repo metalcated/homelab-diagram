@@ -114,7 +114,7 @@ class CollectorManager:
         self.validate_plan(plan)
         nets=self.scope_parser(plan['targets'],plan['allow_public'])
         current={c['id']:c for c in self.connections(plan['site'])}
-        total=0;failures=[];warnings=[]
+        total=0;failures=[];warnings=[];issues=[]
         for target in plan['connections']:
             connection=current[target['id']]
             secret=self.credential(connection)
@@ -174,6 +174,8 @@ class CollectorManager:
                         if len(source_warnings)<10:source_warnings.append('A target could not be collected. Check its protocol version, permissions and connectivity.')
             if not successes:failures.append(connection['label'])
             if errors or source_warnings:warnings.append(connection['label'])
+            if not successes or errors or source_warnings:
+                issues.append(redactor.text(connection['label'])+': '+(source_warnings[0] if source_warnings else 'No inventory was returned.'))
             summary=f'{successes} responding targets; {errors} failed targets. '+(' / '.join(dict.fromkeys(source_warnings))[:1000] if source_warnings else '')
             if not successes and not errors:summary+='No SNMP agents responded. Verify the profile, scope, UDP/161 reachability and read permissions.'
             with closing(self.store.connect()) as db,db:
@@ -181,5 +183,5 @@ class CollectorManager:
             emit('warning' if errors or source_warnings or not successes else 'info','Collector finished. '+summary)
         status='failed' if failures and not total else 'partial' if failures or warnings else 'complete'
         message=f'Collected {total} asset observations. Existing inventory and manual corrections were preserved.'
-        if failures or warnings:message+=' Review collector results for missing permissions, unsupported fields or unreachable targets.'
+        if issues:message+=' '+(' / '.join(issues))[:800]+' Open Live output for the requests and responses.'
         return status,message

@@ -124,6 +124,9 @@ class EventTests(unittest.TestCase):
             plan=app.collectors.plan('home');job=app.start({'plan_id':plan['id'],'confirmed':True})['job'];app.thread.join(5)
         data=output.read_events(self.store,'home',job)
         self.assertEqual(data['job']['status'],'failed')
+        self.assertIn('RouterOS:',data['job']['message'])
+        self.assertIn('[hidden]',data['job']['message'])
+        self.assertTrue(next(j for j in self.store.state()['jobs'] if j['id']==job)['output_available'])
         self.assertTrue(any(r['level']=='error' for r in data['events']))
         self.assertNotIn('never-persist-this',json.dumps(data)+json.dumps(app.collectors.connections()))
 
@@ -167,6 +170,7 @@ class OutputHTTPTests(unittest.TestCase):
             db.execute("INSERT INTO jobs VALUES ('old','home','complete','now','now','done','[]')")
             db.execute("INSERT INTO jobs VALUES ('new','home','running','now',NULL,'working','[]')")
         self.assertEqual(json.loads(self.request('/api/events?site=home&job=old',headers=self.auth())[1])['events'],[])
+        self.assertFalse(next(j for j in self.app.store.state()['jobs'] if j['id']=='old')['output_available'])
         for _ in range(260):output.Events(self.app.store,'new')('info','Event')
         first=json.loads(self.request('/api/events?site=home&job=new',headers=self.auth())[1])
         second=json.loads(self.request('/api/events?site=home&job=new&after='+str(first['next']),headers=self.auth())[1])
