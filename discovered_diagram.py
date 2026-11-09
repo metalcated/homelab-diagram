@@ -131,6 +131,7 @@ def render(state,site_id,redacted=False):
         d.text(LEFT+20,y+317+i*22,f'{label}: {count}',13,MUTED)
     bottom=y+400; y=200;positions={}
     d.text(X,y-25,'Infrastructure',21,TEXT,600)
+    y+=35  # Leave room between the section heading and the raised folder tabs.
     if not network:
         d.rect(X,y,MAIN,85);d.text(X+22,y+34,'No infrastructure roles reported yet',18,TEXT,600);d.text(X+22,y+61,'Collect from your router, hypervisor, storage and power systems to identify them.',14,MUTED);y+=145
     else:
