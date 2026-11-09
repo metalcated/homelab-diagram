@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const escapeHTML = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const token = document.querySelector('meta[name="labmap-token"]').content;
 let state = {sites:[],hosts:[],links:[],jobs:[],runs:[]}, selected = null, currentPlan = null, zoom = 1, panX = 0, panY = 0;
-let refreshPending = false;
+let refreshPending = false, collectionReview = 0;
 
 async function api(path, body) {
   const response = await fetch('/api/' + path, body === undefined ? {cache:'no-store'} : {
@@ -124,14 +124,24 @@ $('site-form').elements.label.addEventListener('input',event=>{const id=$('site-
 busyForm('site-form',async form=>{const p=formData(form);p.targets=p.targets.split(/[\s,]+/).filter(Boolean);p.allow_public=form.elements.allow_public.checked;await api('sites',p);selected=p.id;notice('Site saved. Review its scope before scanning.');});
 busyForm('device-form',async form=>{await api('annotate',formData(form));notice('Device details saved.');});
 $('scan').addEventListener('click',async()=>{
-  try{$('plan-heading').textContent='Review discovery scan';$('start-scan').textContent='Start discovery';$('scan-explanation').textContent='Host discovery only. DNS lookup, service scanning, OS detection and scripts are disabled. Unprivileged TCP probes can miss filtered devices.';currentPlan=await api('plan',{site:selected});$('plan-summary').textContent=`${currentSite().label}: ${currentPlan.addresses.toLocaleString()} addresses in the following scope.`;$('plan-targets').textContent=currentPlan.targets.join('\n');$('plan-command').textContent=currentPlan.commands.map(c=>c.join(' ')).join('\n');$('start-scan').disabled=false;openDialog('scan-dialog');}
-  catch(e){notice(e.message,true);}
+  const request=++collectionReview, site=selected;currentPlan=null;
+  try{
+    const plan=await api('plan',{site});
+    if(request!==collectionReview||selected!==site)return;
+    currentPlan=plan;$('collection-choice').classList.add('hidden');
+    $('plan-heading').textContent='Review discovery scan';$('start-scan').textContent='Start discovery';
+    $('scan-explanation').textContent='Host discovery only. DNS lookup, service scanning, OS detection and scripts are disabled. Unprivileged TCP probes can miss filtered devices.';
+    $('plan-summary').textContent=`${currentSite().label}: ${currentPlan.addresses.toLocaleString()} addresses in the following scope.`;
+    $('plan-targets').textContent=currentPlan.targets.join('\n');$('plan-command').textContent=currentPlan.commands.map(c=>c.join(' ')).join('\n');
+    $('start-scan').disabled=false;openDialog('scan-dialog');
+  }catch(e){if(request===collectionReview)notice(e.message,true);}
 });
 $('start-scan').addEventListener('click',async()=>{
-  $('start-scan').disabled=true;
+  if(!currentPlan)return;
+  $('start-scan').disabled=true;$('collection-select').disabled=true;
   try{await api('scan',{plan_id:currentPlan.id,confirmed:true});$('scan-dialog').close();notice('Collection started. Follow progress in History; no device settings will be changed.');await refresh();}
   catch(e){$('scan-dialog').querySelector('.form-error').textContent=e.message;}
-  finally{$('start-scan').disabled=false;}
+  finally{$('start-scan').disabled=!currentPlan;$('collection-select').disabled=false;}
 });
 $('import-data').addEventListener('click',()=>{$('import-form').reset();$('observer-field').classList.add('hidden');openDialog('import-dialog');});
 $('import-form').elements.format.addEventListener('change',e=>$('observer-field').classList.toggle('hidden',e.target.value!=='routeros'));
@@ -198,15 +208,34 @@ busyForm('source-form',async form=>{
   for(const key of ['password','community','auth_password','privacy_password'])form.elements[key].value='';
   notice('Collector saved. Review collection to discover and enrich its assets.');
 });
-$('collect-inventory').addEventListener('click',async()=>{
-  const button=$('collect-inventory');button.disabled=true;
+$('scan-dialog').addEventListener('close',()=>{collectionReview++;currentPlan=null;});
+async function updateCollectionPlan(){
+  const request=++collectionReview, site=selected, choice=$('collection-select').value;
+  currentPlan=null;$('start-scan').disabled=true;
+  $('scan-dialog').querySelector('.form-error').textContent='';
+  $('plan-summary').textContent='Preparing collection review…';
+  $('plan-targets').textContent='';$('plan-command').textContent='';
   try{
-    currentPlan=await api('collectors/plan',{site:selected});
-    $('plan-heading').textContent='Review direct collection';$('start-scan').textContent='Start collection';
-    $('plan-summary').textContent=`${currentSite().label}: ${currentPlan.addresses.toLocaleString()} management targets across ${currentPlan.connections.length} collectors.`;
+    const plan=await api('collectors/plan',{site,connections:choice?[choice]:null});
+    if(request!==collectionReview||!$('scan-dialog').open||selected!==site)return;
+    currentPlan=plan;
+    const count=currentPlan.connections.length, targets=currentPlan.addresses;
+    $('plan-summary').textContent=`${currentSite().label}: ${targets.toLocaleString()} management ${targets===1?'target':'targets'} across ${count} ${count===1?'collector':'collectors'}.`;
     $('plan-targets').textContent=currentPlan.summaries.join('\n')+'\n\nSite scope:\n'+currentPlan.targets.join('\n');
-    $('scan-explanation').textContent='Read-only management queries. APIs and SNMP identify devices, hardware and reported relationships automatically. No service is enabled or reconfigured, and power connections are not guessed.';
     $('plan-command').textContent=currentPlan.connections.map(c=>`${(state.collectors||[]).find(s=>s.id===c.id)?.label||c.id}\n${c.addresses.join(', ')}`).join('\n\n');
-    $('start-scan').disabled=false;openDialog('scan-dialog');
-  }catch(error){notice(error.message,true);}finally{button.disabled=false;}
+    $('start-scan').disabled=false;
+  }catch(error){
+    if(request!==collectionReview||!$('scan-dialog').open||selected!==site)return;
+    $('plan-summary').textContent='Collection could not be prepared. Choose another collector or correct its connection.';
+    $('scan-dialog').querySelector('.form-error').textContent=error.message;
+  }
+}
+$('collection-select').addEventListener('change',updateCollectionPlan);
+$('collect-inventory').addEventListener('click',()=>{
+  const sources=(state.collectors||[]).filter(c=>c.site===selected&&c.enabled);
+  $('collection-select').innerHTML=`<option value="">All enabled collectors (${sources.length})</option>`+sources.map(c=>`<option value="${escapeHTML(c.id)}">${escapeHTML(c.label)}</option>`).join('');
+  $('collection-choice').classList.remove('hidden');
+  $('plan-heading').textContent='Review direct collection';$('start-scan').textContent='Start collection';
+  $('scan-explanation').textContent='Read-only management queries. APIs and SNMP identify devices, hardware and reported relationships automatically. No service is enabled or reconfigured, and power connections are not guessed.';
+  openDialog('scan-dialog');updateCollectionPlan();
 });

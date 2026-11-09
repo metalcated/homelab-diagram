@@ -221,6 +221,36 @@ class InventoryTests(unittest.TestCase):
 
 class ManagerTests(unittest.TestCase):
     setUp=InventoryTests.setUp
+
+    def test_all_collectors_only_includes_enabled_connections_in_this_site(self):
+        app=labmap.Workspace(self.store)
+        enabled=[app.collectors.save({'site':'home','kind':'routeros','label':label,'config':CFG,'credentials':SECRET})['id'] for label in ('Core','Edge')]
+        app.collectors.save({'site':'home','kind':'routeros','enabled':False,'config':CFG})
+        self.store.save_site({'id':'dc','targets':['10.20.0.0/24']})
+        app.collectors.save({'site':'dc','kind':'routeros','config':CFG})
+        plan=app.collectors.plan('home')
+        self.assertCountEqual([c['id'] for c in plan['connections']],enabled)
+
+    def test_one_collector_does_not_need_credentials_from_unselected_sources(self):
+        app=labmap.Workspace(self.store)
+        saved=app.collectors.save({'site':'home','kind':'routeros','config':CFG,'credentials':SECRET})['id']
+        app.collectors.save({'site':'home','kind':'proxmox','config':CFG})
+        with self.assertRaises(ValueError):app.collectors.plan('home')
+        plan=app.collectors.plan('home',[saved])
+        self.assertEqual([c['id'] for c in plan['connections']],[saved])
+
+    def test_invalid_or_unavailable_selection_is_rejected_before_target_resolution(self):
+        app=labmap.Workspace(self.store)
+        saved=app.collectors.save({'site':'home','kind':'routeros','config':CFG,'credentials':SECRET})['id']
+        disabled=app.collectors.save({'site':'home','kind':'routeros','enabled':False,'config':CFG})['id']
+        self.store.save_site({'id':'dc','targets':['10.20.0.0/24']})
+        foreign=app.collectors.save({'site':'dc','kind':'routeros','config':CFG})['id']
+        with patch('collector_workspace.connection_targets') as resolve:
+            for selected in ([],saved,{},[None],[{}],['unknown'],[saved,'unknown'],[disabled],[foreign]):
+                with self.subTest(selected=selected),self.assertRaises(ValueError):app.collectors.plan('home',selected)
+            resolve.assert_not_called()
+        self.assertEqual(app.plans,{})
+
     def test_saved_config_never_contains_credentials_and_plan_revalidation_blocks_edits(self):
         app=labmap.Workspace(self.store)
         result=app.collectors.save({'site':'home','kind':'routeros','label':'Core','config':CFG,'credentials':SECRET})
@@ -270,6 +300,33 @@ class CollectorHTTPTests(unittest.TestCase):
     setUp=base_tests.HTTPTests.setUp
     request=base_tests.HTTPTests.request
     auth=base_tests.HTTPTests.auth
+
+    def test_single_and_all_selection_execute_only_the_reviewed_collectors(self):
+        auth=self.auth()
+        self.request('/api/sites',{'id':'home','targets':['10.20.0.0/24']},auth)
+        ids=[]
+        for name,address in [('Core','10.20.0.1'),('Edge','10.20.0.2')]:
+            payload={'site':'home','kind':'routeros','label':name,'config':{**CFG,'endpoint':'https://'+address},'credentials':SECRET}
+            code,body,_=self.request('/api/collectors/save',payload,auth)
+            self.assertEqual(code,200);ids.append(json.loads(body)['id'])
+        calls=[]
+        def fake(config,secret,address,nets,**kwargs):
+            calls.append(config['id'])
+            return {'assets':[{'ref':config['id'],'addresses':[address],'name':address,'role':'Router'}],'links':[],'warnings':[]}
+        for selected,expected in [([ids[0]],[ids[0]]),(None,ids)]:
+            with self.subTest(selected=selected),patch.dict(dc.ADAPTERS,{'routeros':fake}):
+                calls.clear()
+                code,body,_=self.request('/api/collectors/plan',{'site':'home','connections':selected},auth)
+                self.assertEqual(code,200);plan=json.loads(body)
+                self.assertCountEqual([c['id'] for c in plan['connections']],expected)
+                self.assertEqual(self.request('/api/scan',{'plan_id':plan['id'],'confirmed':True},auth)[0],200)
+                self.app.thread.join(timeout=5)
+                self.assertFalse(self.app.thread.is_alive())
+                self.assertCountEqual(calls,expected)
+                self.assertEqual(self.app.store.state()['jobs'][0]['status'],'complete')
+                collected={c['id'] for c in self.app.collectors.connections() if c['last_collected']}
+                self.assertEqual(collected,set(expected))
+        self.assertEqual(len(self.app.store.state()['assets']),2)
 
     def test_webui_apis_save_collect_and_return_automatically_classified_assets(self):
         auth=self.auth()

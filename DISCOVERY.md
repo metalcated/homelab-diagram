@@ -99,8 +99,13 @@ python3 labmap.py --plan --site example --target 10.20.0.0/24 --target 10.30.0.0
 
 ## Direct collectors
 
-Open **Collectors**, add a connection, then select **Collect inventory** and review
-its scope. One connection can discover many assets; guests, storage and hardware
+Open **Collectors**, add a connection, then select **Collect inventory**. In the
+review modal, **Collectors to scan** lets you choose **All enabled collectors**
+for the current site or one named collector. Changing this choice prepares a new
+review; check the listed collectors and targets before selecting **Start collection**.
+Disabled collectors are excluded. A single-collector run only needs that
+collector's credentials and leaves other collectors untouched.
+One connection can discover many assets; guests, storage and hardware
 parts do not need manually assigned roles. The optional importer is not part of
 the normal direct-collection workflow.
 

@@ -77,7 +77,13 @@ class CollectorManager:
     def plan(self,site,selected=None):
         saved=self.store.get_site(site)
         nets=self.scope_parser(saved['targets'],saved['allow_public'])
-        connections=[c for c in self.connections(site) if c['enabled'] and (selected is None or c['id'] in selected)]
+        connections=[c for c in self.connections(site) if c['enabled']]
+        if selected is not None:
+            if not isinstance(selected,list) or not selected or any(not isinstance(key,str) for key in selected):
+                raise ValueError('Choose all enabled collectors or at least one collector for this site.')
+            if not set(selected).issubset({c['id'] for c in connections}):
+                raise ValueError('Choose enabled collectors belonging to this site. Refresh the list and review again.')
+            connections=[c for c in connections if c['id'] in selected]
         if not connections:raise ValueError('Add and enable at least one collector for this site.')
         targets=[];summaries=[]
         for c in connections:
