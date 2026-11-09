@@ -12,24 +12,31 @@ The script behind the network diagram of my homelab that I posted on r/homelab. 
 
 ## Local discovery WebUI (fork addition)
 
-This fork also includes a native Mac-friendly discovery workspace. Run
-`python3 labmap.py` and open the loopback URL it prints. Add sites and explicit
-network scopes, run reviewed discovery, and connect directly to RouterOS, Proxmox,
-TrueNAS, iDRAC, APC/CyberPower and SNMP agents. Collectors identify assets and
-relationships automatically; device details and verified connections remain editable. Inventory and
-corrections are saved in a local SQLite database; the UI does not use localStorage.
-The workspace uses Python's standard library and an existing Nmap installation.
-No lab scan starts until its plan is confirmed in the WebUI.
+This fork adds a native Mac discovery workspace and the workflow:
 
-Use **Your lab diagram** above the network canvas: choose **View diagram** or
-download PNG/SVG directly. This generates folder-card output
-from the site's collected inventory. Proxmox guests are grouped inside their
-reported host automatically. The preview supports zoom, downloads, and hiding
-names and addresses; it does not require copying YAML or assigning each guest.
+**Collectors → saved inventory → editable YAML → original `build.py` → PNG/SVG.**
 
-See [DISCOVERY.md](DISCOVERY.md) for usage, privacy, limitations, and tests.
-The original YAML renderer and example below remain available. The automatic
-layout is also accessible with `python3 build.py --discovered-db private/labmap.sqlite --site home`.
+Run `./setup-renderer.command` once, then `./start-labmap.command` and open the
+local URL. Setup uses a project-local Python environment, verified local icons
+and Fira fonts. It does not install fonts into macOS. An existing `rsvg-convert`
+installation is required.
+
+Select a site and choose **Edit YAML & generate** above the inventory canvas.
+The UI fills a draft from collected devices, hardware and host/guest placements.
+Edit the YAML or title fields, choose **Save & generate PNG**, then **View generated
+PNG**. Saved YAML has revision history and a refresh action that merges new
+inventory while preserving your edits. The PNG and SVG downloads are outputs of
+`build.py` for that saved YAML revision, not an alternate inventory renderer.
+
+The original author-specific YAML layout below remains available. `build.py`
+also accepts `layout: collected` with multiple servers and data-driven device
+rows using its original drawing functions. The original example's SVG and PNG
+were verified byte-for-byte unchanged by this extension. The editor accepts both
+schemas. Missing physical links, speeds and application details stay unconfirmed.
+
+Collectors, inventory and corrections remain in SQLite; credentials stay in
+session memory or macOS Keychain. No lab scan starts without its reviewed plan.
+See [DISCOVERY.md](DISCOVERY.md) for usage, privacy, limitations and tests.
 
 ## What it shows
 

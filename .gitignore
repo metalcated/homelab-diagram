@@ -6,3 +6,6 @@ icons/*
 
 # Local discovery inventory and private data
 /private/
+
+# Original renderer dependencies stay project-local
+/.venv/

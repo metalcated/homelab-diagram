@@ -25,7 +25,7 @@ import asset_inventory
 from collector_workspace import CollectorManager
 from direct_collectors import CATALOG
 from scan_events import Events, quiet, read_events, SCHEMA as EVENT_SCHEMA
-import discovered_diagram
+from diagram_yaml import Documents
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent
@@ -397,6 +397,7 @@ class Workspace:
         self.stopping = False
         self.thread = None
         self.collectors=CollectorManager(self,scopes)
+        self.documents=Documents(store)
         with closing(store.connect()) as db, db:
             db.execute("UPDATE jobs SET status='interrupted',finished=?,message='App stopped before completion. Review and retry the scan.' WHERE status='running'", (now(),))
 
@@ -459,6 +460,7 @@ class Workspace:
                 self.process = next(iter(self.processes),None)
 
     def stop(self):
+        self.documents.stop()
         with self.process_lock:
             self.stopping = True
             processes=self.processes|({self.process} if self.process is not None else set())
@@ -521,7 +523,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {"error": "Use the local URL printed by the app."})
         if self.path == "/api/state":
             app=self.server.workspace
-            return self.send(200,{**app.store.state(),"collectors":app.collectors.connections(),"collector_catalog":CATALOG,"keychain_available":app.collectors.vault.keychain is not None,"png_available":shutil.which('rsvg-convert') is not None})
+            return self.send(200,{**app.store.state(),"collectors":app.collectors.connections(),"collector_catalog":CATALOG,"keychain_available":app.collectors.vault.keychain is not None,"png_available":shutil.which('rsvg-convert') is not None,"diagram_documents":app.documents.summary()})
+        if urlsplit(self.path).path in ('/api/diagram-document','/api/diagram-artifact'):
+            try:
+                params=parse_qs(urlsplit(self.path).query,keep_blank_values=True)
+                if set(params)-{'site','build','format'} or any(len(v)!=1 for v in params.values()):raise ValueError('Invalid diagram request.')
+                site=site_id(params.get('site',[''])[0]);app=self.server.workspace
+                if urlsplit(self.path).path=='/api/diagram-artifact':
+                    kind=params.get('format',['png'])[0]
+                    return self.send(200,app.documents.artifact(site,params.get('build',[''])[0],kind),{'png':'image/png','svg':'image/svg+xml','yaml':'application/yaml'}[kind])
+                result=app.documents.get(site)
+                if params.get('format')==['yaml']:return self.send(200,result['yaml'],'application/yaml')
+                return self.send(200,result)
+            except (ValueError,KeyError) as error:return self.send(400,{'error':clean(error,300)})
         if urlsplit(self.path).path in ('/api/original-diagram.svg','/api/original-diagram.png'):
             try:
                 params=parse_qs(urlsplit(self.path).query,keep_blank_values=True)
@@ -529,10 +543,12 @@ class Handler(BaseHTTPRequestHandler):
                 if params.get('redacted',['0'])[0] not in ('0','1'):raise ValueError('Invalid redaction option.')
                 site=site_id(params.get('site',[''])[0])
                 self.server.workspace.store.get_site(site)
-                svg=discovered_diagram.render(self.server.workspace.store.state(),site,params.get('redacted',['0'])[0]=='1')
-                if urlsplit(self.path).path.endswith('.png'):
-                    return self.send(200,discovered_diagram.png(svg),'image/png')
-                return self.send(200,svg,'image/svg+xml')
+                redacted=params.get('redacted',['0'])[0]=='1'
+                builds=self.server.workspace.documents.get(site)['builds']
+                build=next((b for b in builds if b['status']=='complete' and bool(b['redacted'])==redacted),None)
+                if not build:raise ValueError('Open the YAML editor, save the YAML and generate the PNG with build.py first.')
+                kind='png' if urlsplit(self.path).path.endswith('.png') else 'svg'
+                return self.send(200,self.server.workspace.documents.artifact(site,build['id'],kind),'image/png' if kind=='png' else 'image/svg+xml')
             except ValueError as error:return self.send(400,{'error':clean(error,300)})
         if urlsplit(self.path).path == '/api/events':
             if self.headers.get('X-Labmap-Token')!=self.server.workspace.token:
@@ -566,6 +582,14 @@ class Handler(BaseHTTPRequestHandler):
             app = self.server.workspace
             if self.path == "/api/sites":
                 result = app.store.save_site(payload)
+            elif self.path=="/api/diagram-document/save":
+                result=app.documents.save(payload)
+            elif self.path=="/api/diagram-document/refresh":
+                result=app.documents.save(payload,refresh=True)
+            elif self.path=="/api/diagram-document/restore":
+                result=app.documents.restore(payload)
+            elif self.path=="/api/diagram-document/render":
+                result=app.documents.render(payload)
             elif self.path == "/api/collectors/save":
                 result=app.collectors.save(payload)
             elif self.path == "/api/collectors/plan":

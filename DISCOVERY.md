@@ -68,62 +68,85 @@ SQLite defaults to `private/labmap.sqlite`; `--db /path/to/inventory.sqlite` sel
 another database. New database files use mode 0600 and new containing directories
 use mode 0700. The `private/` and `out/` directories are ignored by Git. Keep custom
 database paths and exported diagrams out of public commits. **Canvas SVG** is a
-private snapshot containing observed IPs and names. The original-style preview
+private snapshot containing observed IPs and names. The generated PNG preview
 has a separate **Hide names and addresses** option that also hides model and CPU
 labels. Review any exported diagram before publishing it.
 
 The app does not use localStorage. Browser requests that change data require a
 per-launch token, and mismatched Host/Origin requests are refused. Direct collector credentials can be kept for the session or explicitly saved
 in macOS Keychain; they are never stored in SQLite. The original YAML layout
-and icon workflow remain available. The automatic diagram reads the discovery
-database without rewriting `inventory.yaml` or its hand-placed coordinates.
+and icon workflow remain available. Generated diagram documents are saved separately; the repository example
+`inventory.yaml` and collected asset tables are not overwritten.
 
-## Original-style diagram
+## YAML and the original renderer
 
-Select a site, then use the **Your lab diagram** section above the network canvas.
-Click **View diagram** to open the preview, or **Download PNG** / **Download SVG**
-to save the result directly. The section shows the saved host, VM and container
-totals and the latest collection's status. Its steps link to collector setup,
-collection review, and the finished output. When collection finishes, **Live
-output** also offers **View diagram**, so the result is accessible from the scan.
-Partial or failed collections identify gaps and keep prior saved inventory
-available; they are not described as successful. The preview
-uses the original project's palette, folder cards and bundled icons with a new
-automatic layout. Proxmox guests appear inside their reported host, including
-guests with no IP address. Unplaced guests and assets with unknown roles remain
-visible separately. Manual names, roles and models apply to the diagram too.
-Physical lines require existing manual cable evidence; reported neighbors and
-forwarding entries remain dashed. Colors identify saved network scopes when an
-asset has an address in that scope.
+The diagram workflow is **collected inventory → editable YAML → `build.py` →
+PNG/SVG**. The previous standalone inventory renderer is not used by the WebUI.
 
-Use **Fit width**, **+** and **−** to inspect a large diagram. **Download SVG**
-produces a scalable snapshot; **Download PNG** uses an existing `rsvg-convert`
-installation, when available. The app does not install it automatically. Choose
-**Hide names and addresses** before either download to generate the redacted
-variant. This option is shared by the result section and its preview. Opening
-the preview or exporting does not start a scan, write inventory,
-or load remote icons. Close and reopen the preview after collecting more data.
+Run `./setup-renderer.command` once and launch with `./start-labmap.command`.
+Setup creates `.venv`, installs the pinned YAML/font-measurement dependencies,
+and checksums local icons and Fira fonts from `renderer-assets.json`. Fonts and
+fontconfig settings stay under `private/renderer-assets`; system font settings
+are not changed. Setup refuses to overwrite a different existing asset.
+`rsvg-convert` must already be installed separately.
 
-The same layout can be rendered from the original build entry point:
+1. Select a site and choose **Edit YAML & generate** in **Your lab diagram**.
+2. The initial draft is filled from the collected inventory, including every
+   reported host/guest placement, hardware facts, network devices, known ports,
+   network ranges and unplaced assets. No credentials are imported. Unknown VLAN
+   IDs, application identities, cable paths and link speeds are not guessed.
+3. Edit title fields and/or `inventory.yaml` in the editor. **Save YAML** validates
+   and creates a revision in SQLite. Syntax errors show a line/column without
+   replacing the last saved document. Simultaneous stale saves are rejected.
+4. **Refresh from inventory** performs a three-way merge against the last imported
+   baseline. Manual edits and removals remain; new identities are added. A normal
+   scan never overwrites a saved YAML document. **Restore version** creates a new
+   revision from an earlier save; the current revision remains in history.
+5. Choose whether names and addresses should be hidden, then **Save & generate
+   PNG**. The app snapshots the exact `build.py` bytes and saved `inventory.yaml`
+   into `private/diagrams/<site>/<build-id>/`, links the trusted local icons, and
+   starts that script with fixed input/output arguments. No shell command is
+   assembled from YAML. Rendering does not call collectors or change inventory.
+6. **View generated PNG** shows the actual PNG produced by the script. PNG/SVG
+   downloads refer to that completed build. Editing YAML marks previous output as
+   older until another build completes. Failed builds preserve previous outputs.
+
+Build receipts record saved revision, redaction choice, timestamps, status, and
+SHA-256 hashes of both the YAML and `build.py`. Each run retains its exact YAML,
+script snapshot, SVG and PNG. Builds are bounded to one at a time and 60 seconds;
+stopping the local app terminates its own renderer process group. A restart marks
+unfinished builds interrupted and allows a retry.
+
+The original example YAML is accepted unchanged and uses the original fixed
+layout. Automatically generated documents extend its schema with
+`layout: collected`, `devices`, `servers`, `connections` and `unplaced_assets`.
+Servers keep the original hardware tiles and guest-group/chip fields. Both
+layouts use the drawing functions in `build.py`. Inventory refresh applies to
+the collected schema; the original fixed layout remains directly editable.
+
+The renderer can also be run explicitly:
 
 ```sh
-python3 build.py --discovered-db private/labmap.sqlite --site home --out out
-python3 build.py --discovered-db private/labmap.sqlite --site home --out out --redacted
+.venv/bin/python build.py --inventory private/my-inventory.yaml --out private/my-render --unredacted
 ```
 
-This path uses Python's standard library for SVG and opens the database read-only.
-Add `--svg-only` to skip PNG conversion. Outputs are named
-`home-original-style-private.svg` / `.png` or `home-original-style-redacted.svg`
-/ `.png`. Running `python3 build.py` without the discovery option still uses the
-original YAML layout and its existing dependencies.
+The compatibility discovery command now writes YAML and invokes `build.py` too:
+
+```sh
+.venv/bin/python build.py --discovered-db private/labmap.sqlite --site home --out private/export
+```
+
+This opens the discovery database read-only. Add `--svg-only` to skip PNG or
+`--redacted` to hide names/addresses for collected YAML. The UI keeps saved YAML
+private even when generated images are redacted. Review files before publishing.
 
 ## Preview and checks
 
 Use a separate empty database for simulated demo data:
 
 ```sh
-python3 labmap.py --demo --db /tmp/labmap-demo.sqlite --port 8766
-python3 -m unittest discover -s tests -v
+.venv/bin/python labmap.py --demo --db /tmp/labmap-demo.sqlite --port 8766
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
 Demo databases are clearly marked and cannot start live scans. To reopen an

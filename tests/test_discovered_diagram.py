@@ -114,15 +114,24 @@ class DiagramHTTPTests(unittest.TestCase):
 
     def test_download_scope_query_validation_and_origin_guards(self):
         self.app.store.save_site({'id':'home','targets':['10.20.0.0/24']})
+        # GET serves an original-renderer receipt; it never silently renders a
+        # replacement diagram or writes a draft/build merely by viewing it.
+        self.assertEqual(self.request('/api/original-diagram.svg?site=home&redacted=1')[0],400)
+        doc=self.app.documents.get('home');saved=self.app.documents.save({'site':'home','revision':doc['revision'],'yaml':doc['yaml']})
+        ident='a'*24
+        with closing(self.app.store.connect()) as db,db:
+            db.execute('INSERT INTO diagram_builds VALUES (?,?,?,?,?,?,?,?,?,?)',(ident,'home',saved['revision'],1,'complete','Fixture receipt','now','now','0'*64,'1'*64))
+        folder=self.app.store.path.parent/'diagrams'/'home'/ident/'out';folder.mkdir(parents=True)
+        (folder/'homelab.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+        (folder/'homelab.png').write_bytes(b'\x89PNG\r\n\x1a\nfixture')
         code,body,headers=self.request('/api/original-diagram.svg?site=home&redacted=1')
         self.assertEqual(code,200);ET.fromstring(body);self.assertIn('image/svg+xml',headers['Content-Type']);self.assertEqual(headers['Cache-Control'],'no-store')
         for query in ('site=missing','site=home&redacted=x','site=home&site=home','site=home&unknown=1'):
             self.assertEqual(self.request('/api/original-diagram.svg?'+query)[0],400)
         self.assertEqual(self.request('/api/original-diagram.svg?site=home',headers={'Origin':'https://evil.example'})[0],403)
         self.assertEqual(self.request('/api/original-diagram.svg?site=home',headers={'Host':'evil.example'})[0],403)
-        with patch('discovered_diagram.png',return_value=b'\x89PNG\r\n\x1a\nfixture'):
-            code,body,headers=self.request('/api/original-diagram.png?site=home')
-            self.assertEqual(code,200);self.assertEqual(headers['Content-Type'],'image/png');self.assertTrue(body.startswith(b'\x89PNG'))
-        with patch('discovered_diagram.shutil.which',return_value=None):
+        code,body,headers=self.request('/api/original-diagram.png?site=home&redacted=1')
+        self.assertEqual(code,200);self.assertEqual(headers['Content-Type'],'image/png');self.assertTrue(body.startswith(b'\x89PNG'))
+        with patch('labmap.shutil.which',return_value=None):
             self.assertFalse(json.loads(self.request('/api/state')[1])['png_available'])
-            code,body,_=self.request('/api/original-diagram.png?site=home');self.assertEqual(code,400);self.assertIn('SVG instead',body.decode())
+            self.assertEqual(self.request('/api/original-diagram.png?site=home&redacted=1')[0],200)
