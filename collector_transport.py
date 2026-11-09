@@ -10,6 +10,7 @@ import ssl
 import struct
 import time
 from urllib.parse import urlsplit
+from scan_events import quiet
 
 MAX_RESPONSE = 4*1024*1024
 
@@ -80,13 +81,14 @@ class PinnedHTTPS(http.client.HTTPSConnection):
 
 
 class HTTPS:
-    def __init__(self,config,address,headers=None,stop=None):
+    def __init__(self,config,address,headers=None,stop=None,emit=None):
         self.host,self.port=endpoint(config['endpoint'])
         self.address=address
         self.pin=config.get('fingerprint','')
         self.headers=dict(headers or {})
         self.stop=stop or (lambda:False)
         self.calls=0
+        self.emit=emit or quiet
 
     def get(self,path):
         self.calls+=1
@@ -96,6 +98,9 @@ class HTTPS:
         if parts.scheme or parts.netloc or not path.startswith('/') or '..' in parts.path.split('/') or '\\' in path or '\r' in path or '\n' in path:
             raise CollectorError("Device returned an unsafe resource link.")
         conn=PinnedHTTPS(self.host,self.port,self.address,self.pin)
+        resource=parts.path
+        started=time.monotonic()
+        self.emit('request','GET '+resource)
         try:
             # Verify trust/pin before constructing a request with credentials.
             conn.connect()
@@ -109,12 +114,19 @@ class HTTPS:
             if len(body)>MAX_RESPONSE:
                 raise CollectorError("Management response exceeded 4 MiB.")
             try:
-                return json.loads(body)
+                data=json.loads(body)
             except (UnicodeError,ValueError):
                 raise CollectorError("Management endpoint did not return valid JSON.") from None
+            self.emit('response',f'HTTP {response.status} / GET {resource}',{'bytes':len(body),'duration_ms':round((time.monotonic()-started)*1000),'data':data})
+            return data
+        except CollectorError as error:
+            self.emit('error',f'GET {resource}: {error}',{'code':error.code})
+            raise
         except (ssl.SSLError,ssl.CertificateError):
+            self.emit('error','TLS verification failed; no response preview is available.')
             raise CollectorError("TLS verification failed. Configure a trusted certificate or an explicitly verified SHA-256 pin.") from None
         except (OSError,http.client.HTTPException):
+            self.emit('error','Management endpoint could not be reached or timed out.')
             raise CollectorError("Management endpoint could not be reached or timed out.") from None
         finally:
             conn.close()
@@ -124,12 +136,14 @@ class TrueNASWebSocket:
     """Small RFC 6455 text client for bounded JSON-RPC reads on /api/current."""
     READ_METHODS={'system.info','interface.query','pool.query','disk.query','sharing.smb.query','sharing.nfs.query'}
 
-    def __init__(self,config,address,stop=None):
+    def __init__(self,config,address,stop=None,emit=None):
         host,port=endpoint(config['endpoint'])
         self.connection=PinnedHTTPS(host,port,address,config.get('fingerprint',''))
         self.socket=None
         self.counter=0
         self.stop=stop or (lambda:False)
+        self.emit=emit or quiet
+        self.emit('request','Open TrueNAS WebSocket /api/current')
         try:
             self.connection.connect()
             self.socket=self.connection.sock
@@ -150,7 +164,9 @@ class TrueNASWebSocket:
             if (lines[0].split()[1]!='101' or headers.get('sec-websocket-accept')!=expected or
                 headers.get('upgrade','').lower()!='websocket' or 'upgrade' not in headers.get('connection','').lower() or headers.get('sec-websocket-extensions')):
                 raise CollectorError('TrueNAS did not accept a supported WebSocket connection.')
+            self.emit('response','WebSocket upgrade accepted (HTTP 101).')
         except BaseException:
+            self.emit('error','TrueNAS WebSocket connection or TLS verification failed.')
             self.close()
             raise
 
@@ -202,12 +218,24 @@ class TrueNASWebSocket:
             raise CollectorError('Only read-only inventory methods and API-key login are allowed.')
         self.counter+=1
         request={'jsonrpc':'2.0','id':self.counter,'method':method,'params':params or []}
-        self.send_frame(1,json.dumps(request).encode())
-        for _ in range(100):
-            response=self.receive()
-            if not isinstance(response,dict) or response.get('id')!=self.counter:continue
-            if response.get('error'):
-                code=response['error'].get('code',0)
-                raise CollectorError('TrueNAS method or read permission is unavailable.',code)
-            return response.get('result')
-        raise CollectorError('Too many unsolicited TrueNAS notifications.')
+        self.emit('request','JSON-RPC '+method)
+        try:
+            self.send_frame(1,json.dumps(request).encode())
+            for _ in range(100):
+                response=self.receive()
+                if not isinstance(response,dict) or response.get('id')!=self.counter:continue
+                if response.get('error'):
+                    code=response['error'].get('code',0)
+                    raise CollectorError('TrueNAS method or read permission is unavailable.',code)
+                result=response.get('result')
+                if method.startswith('auth.'):
+                    self.emit('response','Authentication response received; contents hidden.')
+                else:self.emit('response','JSON-RPC result / '+method,{'result':result})
+                return result
+            raise CollectorError('Too many unsolicited TrueNAS notifications.')
+        except CollectorError as error:
+            self.emit('error','JSON-RPC '+method+': '+str(error),{'code':error.code})
+            raise
+        except (OSError,ValueError):
+            self.emit('error','TrueNAS request failed or timed out.')
+            raise CollectorError('TrueNAS request failed or timed out.') from None

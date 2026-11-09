@@ -3,7 +3,9 @@ const $ = (id) => document.getElementById(id);
 const escapeHTML = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const token = document.querySelector('meta[name="labmap-token"]').content;
 let state = {sites:[],hosts:[],links:[],jobs:[],runs:[]}, selected = null, currentPlan = null, zoom = 1, panX = 0, panY = 0;
-let refreshPending = false, collectionReview = 0;
+let refreshPending = null, collectionReview = 0;
+let activeTab='devices', outputJob=null, outputCursor=0, outputGeneration=0, outputBusy=false, outputFinished=false;
+let outputAbort=null;
 
 async function api(path, body) {
   const response = await fetch('/api/' + path, body === undefined ? {cache:'no-store'} : {
@@ -35,15 +37,17 @@ function deviceModel(host) { return host.manual_model || host.model || host.vend
 function clip(text, limit=29) { return text.length > limit ? text.slice(0,limit-1)+'…' : text; }
 function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
 
-async function refresh() {
-  if (refreshPending) return;
-  refreshPending = true;
-  try {
-    state = await api('state');
-    if (!state.sites.some(s => s.id === selected)) selected = state.sites[0]?.id || null;
-    render();
-  } catch(error) { notice(error.message, true); }
-  finally { refreshPending = false; }
+async function refresh(force=false) {
+  if(refreshPending){await refreshPending;if(!force)return;}
+  refreshPending=(async()=>{
+    try {
+      state = await api('state');
+      if (!state.sites.some(s => s.id === selected)) selected = state.sites[0]?.id || null;
+      render();
+    } catch(error) { notice(error.message, true); }
+    finally { refreshPending = null; }
+  })();
+  return refreshPending;
 }
 function render() {
   $('demo-badge').classList.toggle('hidden', !(state.demo||state.simulated));
@@ -65,6 +69,7 @@ function render() {
   $('add-link').disabled = currentHosts().length < 2;
   $('counts').textContent = `${currentHosts().length} assets / ${currentLinks().length} relationships`;
   renderCanvas(); renderTables();
+  renderOutputJobs();
 }
 function renderCanvas() {
   const hosts = currentHosts(), links = currentLinks();
@@ -113,7 +118,7 @@ function busyForm(id, handler) {
   $(id).addEventListener('submit',async event=>{
     event.preventDefault();const form=event.currentTarget,button=form.querySelector('[type="submit"]');button.disabled=true;
     const error=form.querySelector('.form-error');error.textContent='';
-    try{await handler(form);form.closest('dialog').close();await refresh();}
+    try{await handler(form);form.closest('dialog').close();await refresh(true);}
     catch(e){error.textContent=e.message;}finally{button.disabled=false;}
   });
 }
@@ -139,7 +144,11 @@ $('scan').addEventListener('click',async()=>{
 $('start-scan').addEventListener('click',async()=>{
   if(!currentPlan)return;
   $('start-scan').disabled=true;$('collection-select').disabled=true;
-  try{await api('scan',{plan_id:currentPlan.id,confirmed:true});$('scan-dialog').close();notice('Collection started. Follow progress in History; no device settings will be changed.');await refresh();}
+  try{
+    const result=await api('scan',{plan_id:currentPlan.id,confirmed:true});$('scan-dialog').close();
+    notice('Collection started. Live output shows requests, responses and errors as they happen.');
+    await refresh(true);resetOutput(result.job);renderOutputJobs();selectTab('output');$('output-panel').scrollIntoView({block:'start'});
+  }
   catch(e){$('scan-dialog').querySelector('.form-error').textContent=e.message;}
   finally{$('start-scan').disabled=!currentPlan;$('collection-select').disabled=false;}
 });
@@ -152,9 +161,9 @@ busyForm('import-form',async form=>{
 $('add-link').addEventListener('click',()=>{const form=$('link-form');form.reset();const options=currentHosts().map(h=>`<option value="${escapeHTML(assetKey(h))}">${escapeHTML(hostName(h)+' ('+h.address+')')}</option>`).join('');form.elements.src.innerHTML=options;form.elements.dst.innerHTML=options;form.elements.dst.selectedIndex=1;openDialog('link-dialog');});
 busyForm('link-form',async form=>{await api('link',{...formData(form),site:selected});notice('Confirmed connection saved.');});
 $('search').addEventListener('input',renderTables);$('show-components').addEventListener('change',render);
-const tabs=['devices','connections','history'];
-function selectTab(name){for(const tab of tabs){const active=tab===name;$(tab+'-tab').setAttribute('aria-selected',String(active));$(tab+'-tab').tabIndex=active?0:-1;$(tab+'-panel').classList.toggle('hidden',!active);}}
-for(const [index,name] of tabs.entries()){$(name+'-tab').addEventListener('click',()=>selectTab(name));$(name+'-tab').addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const next=e.key==='Home'?0:e.key==='End'?2:(index+(e.key==='ArrowRight'?1:2))%3;selectTab(tabs[next]);$(tabs[next]+'-tab').focus();});}
+const tabs=['devices','connections','history','output'];
+function selectTab(name){activeTab=name;for(const tab of tabs){const active=tab===name;$(tab+'-tab').setAttribute('aria-selected',String(active));$(tab+'-tab').tabIndex=active?0:-1;$(tab+'-panel').classList.toggle('hidden',!active);}$('search').closest('label').classList.toggle('hidden',name==='output');if(name==='output')refreshOutput();}
+for(const [index,name] of tabs.entries()){$(name+'-tab').addEventListener('click',()=>selectTab(name));$(name+'-tab').addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const next=e.key==='Home'?0:e.key==='End'?tabs.length-1:(index+(e.key==='ArrowRight'?1:tabs.length-1))%tabs.length;selectTab(tabs[next]);$(tabs[next]+'-tab').focus();});}
 $('zoom-in').addEventListener('click',()=>{zoom=Math.min(8,zoom*1.25);renderCanvas();});$('zoom-out').addEventListener('click',()=>{zoom=Math.max(.5,zoom/1.25);renderCanvas();});$('zoom-reset').addEventListener('click',()=>{zoom=1;panX=0;panY=0;renderCanvas();});
 let drag = null;
 $('canvas').addEventListener('pointerdown',event=>{
@@ -173,6 +182,61 @@ for(const name of ['pointerup','pointercancel'])$('canvas').addEventListener(nam
 window.matchMedia('(max-width:720px)').addEventListener('change',()=>{if(currentSite()){zoom=1;panX=0;panY=0;renderCanvas();}});
 selectTab('devices');refresh();
 setInterval(()=>{if(state.jobs.some(j=>j.status==='running')&&!document.querySelector('dialog[open]'))refresh();},2000);
+
+function resetOutput(job){
+  outputJob=job;outputCursor=0;outputGeneration++;outputFinished=false;
+  outputAbort?.abort();
+  $('output-events').replaceChildren();
+  $('output-status').textContent=job?'Loading scan output…':'Start a scan to see its requests and responses here.';
+}
+function renderOutputJobs(){
+  const jobs=state.jobs.filter(j=>j.site===selected);
+  if(!jobs.some(j=>j.id===outputJob))resetOutput(jobs[0]?.id||null);
+  const options=jobs.map(j=>`<option value="${escapeHTML(j.id)}">${escapeHTML(j.started.slice(0,19).replace('T',' '))} UTC / ${escapeHTML(j.status)}</option>`).join('');
+  if($('output-job').innerHTML!==options)$('output-job').innerHTML=options;
+  $('output-job').value=outputJob||'';$('output-job').disabled=!jobs.length;
+  if(activeTab==='output')refreshOutput();
+}
+async function refreshOutput(){
+  if(outputBusy||!outputJob||activeTab!=='output'||outputFinished)return;
+  outputBusy=true;
+  const generation=outputGeneration,job=outputJob,site=selected;
+  try{
+    for(let page=0;page<5;page++){
+      const query=new URLSearchParams({site,job,after:String(outputCursor)});
+      const controller=new AbortController();outputAbort=controller;
+      const timeout=setTimeout(()=>controller.abort(),10000);
+      let response,data;
+      try{
+        response=await fetch('/api/events?'+query,{cache:'no-store',headers:{'X-Labmap-Token':token},signal:controller.signal});
+        data=await response.json();
+      }finally{clearTimeout(timeout);}
+      if(generation!==outputGeneration||job!==outputJob||site!==selected)return;
+      if(response.status===404){outputFinished=true;throw new Error('Restart the local Lab Map app to enable live output.');}
+      if(!response.ok)throw new Error(data.error||'Scan output could not be loaded.');
+      const stream=$('output-events');
+      for(const event of data.events){
+        const row=document.createElement('article');row.className='output-event output-'+event.level;
+        const heading=`<span class="output-time">${escapeHTML(event.observed.slice(11,23))}</span><span class="output-level">${escapeHTML(event.level)}</span><span class="output-message"><strong>${escapeHTML(event.collector||'Scan')}</strong>${event.target?` <span class="address">${escapeHTML(event.target)}</span>`:''}<span>${escapeHTML(event.message)}</span></span>`;
+        let details=event.details;
+        if(details){try{details=JSON.stringify(JSON.parse(details),null,2);}catch{/* Truncated previews remain readable text. */}}
+        row.innerHTML=details?`<details><summary>${heading}</summary><pre>${escapeHTML(details)}</pre></details>`:`<div class="output-line">${heading}</div>`;
+        stream.append(row);
+      }
+      outputCursor=data.next;
+      const status=`${data.job.status} / ${stream.childElementCount.toLocaleString()} events (UTC)`;
+      $('output-status').textContent=stream.childElementCount?status:data.job.status==='running'?'Waiting for the first event…':'No detailed output was recorded for this scan.';
+      if($('output-follow').checked)stream.scrollTop=stream.scrollHeight;
+      outputFinished=data.job.status!=='running'&&!data.has_more;
+      if(!data.has_more)break;
+    }
+  }catch(error){
+    if(generation===outputGeneration)$('output-status').textContent=(error.name==='AbortError'?'Connection interrupted.':error.message)+(outputFinished?'':' Retrying…');
+  }finally{outputBusy=false;}
+}
+$('output-job').addEventListener('change',()=>{resetOutput($('output-job').value);refreshOutput();});
+$('output-follow').addEventListener('change',()=>{if($('output-follow').checked)$('output-events').scrollTop=$('output-events').scrollHeight;});
+setInterval(refreshOutput,1000);
 
 function renderSources(){
   const sources=(state.collectors||[]).filter(c=>c.site===selected);

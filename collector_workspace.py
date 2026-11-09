@@ -12,6 +12,7 @@ import asset_inventory
 from collector_secrets import Vault
 from collector_transport import CollectorError
 from direct_collectors import ADAPTERS, CATALOG, connection_targets, validate_config
+from scan_events import Events, Redactor
 
 
 def now():return datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -109,7 +110,7 @@ class CollectorManager:
             if not c or not c['enabled'] or c['revision']!=target['revision']:raise ValueError('Collector configuration changed. Review collection again.')
             self.credential(c)
 
-    def collect(self,plan):
+    def collect(self,plan,job=None):
         self.validate_plan(plan)
         nets=self.scope_parser(plan['targets'],plan['allow_public'])
         current={c['id']:c for c in self.connections(plan['site'])}
@@ -118,6 +119,9 @@ class CollectorManager:
             connection=current[target['id']]
             secret=self.credential(connection)
             cfg={**connection['config'],'id':connection['id'],'kind':connection['kind']}
+            redactor=Redactor.connection(cfg,secret)
+            emit=Events(self.store,job,connection['label'],redactor=redactor)
+            emit('info',f'Starting collector / {len(target["addresses"])} management targets.')
             successes=0;source_warnings=[];errors=0
             deadline=time.monotonic()+1800
             rate_lock=threading.Lock()
@@ -130,9 +134,20 @@ class CollectorManager:
                         next_start[0]=max(next_start[0],time.monotonic())+0.25
                     if wait:time.sleep(wait)
                 adapter=ADAPTERS[connection['kind']]
-                kwargs={'stop':lambda:self.workspace.stopping}
+                output=Events(self.store,job,connection['label'],address,redactor)
+                output('info','Connecting to management target.')
+                kwargs={'stop':lambda:self.workspace.stopping,'emit':output}
                 if CATALOG[connection['kind']]['auth']=='snmp':kwargs['runner']=self.workspace.execute_command
-                return adapter(cfg,secret,address,nets,**kwargs)
+                try:
+                    batch=adapter(cfg,secret,address,nets,**kwargs)
+                    output('info',f'Discovered {len(batch["assets"])} assets and {len(batch["links"])} relationships.',{'assets':batch['assets']})
+                    return batch
+                except CollectorError as error:
+                    output('error',str(error),{'code':error.code})
+                    raise
+                except Exception:
+                    output('error','Target failed. Check protocol support, connectivity and read permissions. Unexpected diagnostics are hidden.')
+                    raise
             # A shared SNMP profile finds agents across explicit scopes without per-asset assignments.
             workers=4 if CATALOG[connection['kind']]['auth']=='snmp' else 1
             with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -145,10 +160,14 @@ class CollectorManager:
                                 count=asset_inventory.ingest(db,plan['site'],connection['kind'],batch,now())
                                 db.execute('INSERT INTO runs(site,source,observed,hosts) VALUES (?,?,?,?)',(plan['site'],connection['kind'],now(),count))
                             successes+=1;total+=count
-                        source_warnings.extend(batch.get('warnings',[]))
+                            Events(self.store,job,connection['label'],futures[future],redactor)('info',f'Saved {count} asset observations. Existing corrections were preserved.')
+                        for warning in batch.get('warnings',[]):
+                            warning=redactor.text(warning)
+                            source_warnings.append(warning)
+                            Events(self.store,job,connection['label'],futures[future],redactor)('warning',warning)
                     except CollectorError as error:
                         errors+=1
-                        if len(source_warnings)<10:source_warnings.append(str(error))
+                        if len(source_warnings)<10:source_warnings.append(redactor.text(error))
                     except Exception:
                         # Unexpected libraries/HTTP diagnostics can contain secrets. Never persist their text.
                         errors+=1
@@ -158,7 +177,8 @@ class CollectorManager:
             summary=f'{successes} responding targets; {errors} failed targets. '+(' / '.join(dict.fromkeys(source_warnings))[:1000] if source_warnings else '')
             if not successes and not errors:summary+='No SNMP agents responded. Verify the profile, scope, UDP/161 reachability and read permissions.'
             with closing(self.store.connect()) as db,db:
-                db.execute('UPDATE collector_connections SET last_collected=?,last_result=? WHERE id=?',(now(),summary,connection['id']))
+                db.execute('UPDATE collector_connections SET last_collected=?,last_result=? WHERE id=?',(now(),redactor.text(summary,1500),connection['id']))
+            emit('warning' if errors or source_warnings or not successes else 'info','Collector finished. '+summary)
         status='failed' if failures and not total else 'partial' if failures or warnings else 'complete'
         message=f'Collected {total} asset observations. Existing inventory and manual corrections were preserved.'
         if failures or warnings:message+=' Review collector results for missing permissions, unsupported fields or unreachable targets.'

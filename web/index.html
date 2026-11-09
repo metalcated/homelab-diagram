@@ -29,10 +29,16 @@
         <div id="canvas" class="canvas" aria-label="Device map"></div>
         <div class="map-legend"><span><i class="key physical"></i>Confirmed cable</span><span><i class="key neighbor"></i>Reported neighbor</span><span><i class="key logical"></i>Logical / power</span><span class="map-hint">Select a device to edit. Drag the canvas to move.</span></div>
         <p class="snapshot-note">A scan finds responding addresses. Canvas position does not imply cabling. Neighbor reports and old observations remain available for review.</p>
-        <div class="details-header"><div class="tabs" role="tablist"><button id="devices-tab" role="tab" aria-selected="true" aria-controls="devices-panel">Devices</button><button id="connections-tab" role="tab" aria-selected="false" aria-controls="connections-panel">Connections</button><button id="history-tab" role="tab" aria-selected="false" aria-controls="history-panel">History</button></div><label class="search-label"><span class="sr-only">Filter devices</span><input id="search" type="search" placeholder="Find a name, IP or model"></label></div>
+        <div class="details-header"><div class="tabs" role="tablist"><button id="devices-tab" role="tab" aria-selected="true" aria-controls="devices-panel">Devices</button><button id="connections-tab" role="tab" aria-selected="false" aria-controls="connections-panel">Connections</button><button id="history-tab" role="tab" aria-selected="false" aria-controls="history-panel">History</button><button id="output-tab" role="tab" aria-selected="false" aria-controls="output-panel">Live output</button></div><label class="search-label"><span class="sr-only">Filter devices</span><input id="search" type="search" placeholder="Find a name, IP or model"></label></div>
         <div id="devices-panel" role="tabpanel" class="table-wrap"></div>
         <div id="connections-panel" role="tabpanel" class="table-wrap hidden"></div>
         <div id="history-panel" role="tabpanel" class="table-wrap hidden"></div>
+        <section id="output-panel" role="tabpanel" aria-labelledby="output-tab" class="output-panel hidden">
+          <div class="output-toolbar"><label>Scan<select id="output-job" aria-label="Scan output history"></select></label><label class="checkbox output-follow"><input id="output-follow" type="checkbox" checked>Follow latest output</label></div>
+          <p id="output-status" class="muted" role="status" aria-live="polite">Start a scan to see its requests and responses here.</p>
+          <p class="output-note">Response previews contain inventory fields only and may be shortened. Credentials, headers and authentication payloads are hidden.</p>
+          <div id="output-events" class="output-events" role="log" aria-label="Scan output" aria-live="off" tabindex="0"></div>
+        </section>
       </section>
       <footer>Proxmox, RouterOS, TrueNAS, physical servers and power equipment can share one inventory. Direct collectors identify assets and report their relationships. Physical power feeds still require evidence.</footer>
     </main>

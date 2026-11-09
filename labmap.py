@@ -24,6 +24,8 @@ import xml.etree.ElementTree as ET
 import asset_inventory
 from collector_workspace import CollectorManager
 from direct_collectors import CATALOG
+from scan_events import Events, quiet, read_events, SCHEMA as EVENT_SCHEMA
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent
 MAX_INPUT = 4 * 1024 * 1024
@@ -188,6 +190,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 class Store:
     def __init__(self, path):
         self.path = Path(path).expanduser().resolve()
+        self._limited_output_jobs=set()
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
         os.close(fd)
@@ -201,7 +204,7 @@ class Store:
                 handle=os.open(backup,os.O_CREAT|os.O_EXCL|os.O_RDWR,0o600);os.close(handle)
                 with closing(sqlite3.connect(backup)) as destination:
                     db.backup(destination)
-            db.executescript(SCHEMA+asset_inventory.SCHEMA)
+            db.executescript(SCHEMA+asset_inventory.SCHEMA+EVENT_SCHEMA)
             migrated=db.execute("SELECT 1 FROM settings WHERE key='asset_migration_v1'").fetchone()
             if not migrated:
                 with db:
@@ -308,16 +311,26 @@ class Store:
                 "demo": bool(demo), "nmap_available": shutil.which("nmap") is not None}
 
 
-def run_scan(plan, store, runner=subprocess.run):
+def run_scan(plan, store, runner=subprocess.run,emit=quiet):
     nets = scopes(plan["targets"], plan["allow_public"])
     if not shutil.which("nmap"):
+        emit('error','Nmap is not installed. Install it separately or import an existing result.')
         raise ValueError("Nmap is not installed. Install it separately, or import existing XML.")
     results = []
     for command in plan["commands"]:
-        result = runner(command, capture_output=True, text=True, timeout=600, check=False)
+        emit('request','Nmap host discovery started. Waiting for the scan response.',{'targets':plan['targets']})
+        try:result = runner(command, capture_output=True, text=True, timeout=600, check=False)
+        except (OSError,ValueError,subprocess.SubprocessError):
+            emit('error','Nmap could not run, timed out, or was stopped. No partial inventory was saved.')
+            raise
         if result.returncode:
+            emit('error',f'Nmap exited with status {result.returncode}. Command diagnostics are hidden.')
             raise ValueError("Nmap could not complete the scan. Check target reachability and local network permissions; no partial inventory was saved.")
-        results.append(parse_nmap(result.stdout, nets))
+        try:results.append(parse_nmap(result.stdout, nets))
+        except ValueError:
+            emit('error','Nmap response was invalid, incomplete or outside the saved scope. No partial inventory was saved.')
+            raise
+        emit('response',f'Nmap returned {len(results[-1][0])} responding addresses.',{'hosts':results[-1][0]})
     # All address families must succeed before the single database transaction.
     hosts = [h for result in results for h in result[0]]
     observed = max(result[2] for result in results)
@@ -459,17 +472,23 @@ class Workspace:
 
     def worker(self, job, plan):
         try:
-            if plan.get("kind")=="collectors":
-                status,message=self.collectors.collect(plan)
-            else:
-                count = run_scan(plan, self.store, self.execute_command)
-                status, message = "complete", f"Observed {count} addresses. Existing labels and earlier observations were preserved."
-        except (ValueError, OSError, subprocess.SubprocessError, sqlite3.Error) as exc:
-            status, message = "failed", clean(str(exc), 500)
-        with closing(self.store.connect()) as db, db:
-            db.execute("UPDATE jobs SET status=?,finished=?,message=? WHERE id=?", (status, now(), message, job))
-        with self.lock:
-            self.running = False
+            emit=Events(self.store,job)
+            try:
+                emit('info','Scan started. Credentials and authentication payloads are hidden.',{'kind':plan.get('kind','nmap'),'targets':plan['targets']})
+                if plan.get("kind")=="collectors":
+                    status,message=self.collectors.collect(plan,job)
+                else:
+                    count = run_scan(plan, self.store, self.execute_command,emit=Events(self.store,job,'Network discovery'))
+                    status, message = "complete", f"Observed {count} addresses. Existing labels and earlier observations were preserved."
+            except Exception:
+                status, message = "failed", "Scan could not complete. Review Live output, connectivity and read permissions before retrying."
+                emit('error','Scan failed. Unexpected exception text and command diagnostics are hidden.')
+            emit('complete',status.capitalize()+': '+message)
+            with closing(self.store.connect()) as db, db:
+                db.execute("UPDATE jobs SET status=?,finished=?,message=? WHERE id=?", (status, now(), message, job))
+        finally:
+            with self.lock:
+                self.running = False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -502,6 +521,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/state":
             app=self.server.workspace
             return self.send(200,{**app.store.state(),"collectors":app.collectors.connections(),"collector_catalog":CATALOG,"keychain_available":app.collectors.vault.keychain is not None})
+        if urlsplit(self.path).path == '/api/events':
+            if self.headers.get('X-Labmap-Token')!=self.server.workspace.token:
+                return self.send(403,{'error':'Refresh the local app to view scan output.'})
+            try:
+                params=parse_qs(urlsplit(self.path).query,keep_blank_values=True)
+                if set(params)-{'site','job','after'} or any(len(v)!=1 for v in params.values()):raise ValueError('Invalid output request.')
+                return self.send(200,read_events(self.server.workspace.store,params.get('site',[''])[0],params.get('job',[''])[0],params.get('after',['0'])[0]))
+            except ValueError as error:return self.send(400,{'error':clean(error,200)})
         if self.path == "/api/diagram.svg":
             return self.send(200, diagram(self.server.workspace.store.state()), "image/svg+xml")
         assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/style.css": ("style.css", "text/css")}

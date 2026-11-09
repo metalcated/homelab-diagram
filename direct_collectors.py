@@ -14,6 +14,7 @@ from urllib.parse import quote, urlencode
 
 from asset_inventory import mac, text
 from collector_transport import CollectorError, HTTPS, TrueNASWebSocket, endpoint, fingerprint, resolve_scoped
+from scan_events import quiet
 
 CATALOG={
  'routeros':{'name':'RouterOS','transport':'HTTPS REST','auth':'basic'},
@@ -85,8 +86,8 @@ def basic(config,secret):
     return {'Authorization':'Basic '+base64.b64encode(raw).decode()}
 
 
-def routeros(config,secret,address,nets,stop=lambda:False,client=None):
-    http=client or HTTPS(config,address,basic(config,secret),stop)
+def routeros(config,secret,address,nets,stop=lambda:False,client=None,emit=None):
+    http=client or HTTPS(config,address,basic(config,secret),stop,emit=emit)
     b=Batch(nets)
     def get(path,properties,required=False):
         url='/rest/'+path+'?'+urlencode({'.proplist':','.join(properties)})
@@ -127,10 +128,10 @@ def routeros(config,secret,address,nets,stop=lambda:False,client=None):
     return b.result()
 
 
-def proxmox(config,secret,address,nets,stop=lambda:False,client=None):
+def proxmox(config,secret,address,nets,stop=lambda:False,client=None,emit=None):
     token=secret.get('password','')
     if not token:raise CollectorError('Enter the Proxmox API token secret.')
-    http=client or HTTPS(config,address,{'Authorization':f'PVEAPIToken={config["username"]}={token}'},stop)
+    http=client or HTTPS(config,address,{'Authorization':f'PVEAPIToken={config["username"]}={token}'},stop,emit=emit)
     b=Batch(nets)
     def get(path,optional=False,default=None):
         payload=b.optional(http,'/api2/json'+path,{'data':default}) if optional else http.get('/api2/json'+path)
@@ -186,9 +187,9 @@ def proxmox(config,secret,address,nets,stop=lambda:False,client=None):
     return b.result()
 
 
-def truenas(config,secret,address,nets,stop=lambda:False,client=None):
+def truenas(config,secret,address,nets,stop=lambda:False,client=None,emit=None):
     b=Batch(nets)
-    ws=client or TrueNASWebSocket(config,address,stop)
+    ws=client or TrueNASWebSocket(config,address,stop,emit=emit)
     try:
         key=secret.get('password','')
         if not key:raise CollectorError('Enter the TrueNAS API key.')
@@ -224,8 +225,8 @@ def truenas(config,secret,address,nets,stop=lambda:False,client=None):
     finally:ws.close()
 
 
-def idrac(config,secret,address,nets,stop=lambda:False,client=None):
-    http=client or HTTPS(config,address,basic(config,secret),stop)
+def idrac(config,secret,address,nets,stop=lambda:False,client=None,emit=None):
+    http=client or HTTPS(config,address,basic(config,secret),stop,emit=emit)
     b=Batch(nets)
     def members(path,optional=True):
         if not str(path).startswith('/redfish/v1/'):raise CollectorError('Invalid Redfish resource link.')
@@ -290,8 +291,9 @@ def parse_snmp(output):
 
 
 class SNMP:
-    def __init__(self,config,secret,address,runner=subprocess.run):
+    def __init__(self,config,secret,address,runner=subprocess.run,emit=None):
         self.address=address;self.runner=runner;self.config=config
+        self.emit=emit or quiet
         self.temp=tempfile.TemporaryDirectory(prefix='labmap-snmp-')
         def token(value):
             value=str(value)
@@ -322,16 +324,26 @@ class SNMP:
         if not binary:raise CollectorError('Net-SNMP command tools are not installed on this Mac.')
         port=str(self.config.get('snmp_port',161))
         target=('udp6:['+self.address+']:'+port) if ':' in self.address else ('udp:'+self.address+':'+port)
-        command=[binary,'-m','','-On','-Oe','-Ot','-t','1','-r','0']+(['-Cr16'] if walk else [])+[target]+list(oids)
-        result=self.runner(command,capture_output=True,text=True,timeout=12 if walk else 4,check=False,env=self.env)
+        oids=list(oids)
+        command=[binary,'-m','','-On','-Oe','-Ot','-t','1','-r','0']+(['-Cr16'] if walk else [])+[target]+oids
+        operation='SNMP GETBULK' if walk else 'SNMP GET'
+        self.emit('request',operation+' '+', '.join(oids))
+        started=time.monotonic()
+        try:result=self.runner(command,capture_output=True,text=True,timeout=12 if walk else 4,check=False,env=self.env)
+        except (OSError,ValueError,subprocess.SubprocessError):
+            self.emit('error',operation+' failed or timed out. Command diagnostics are hidden.')
+            raise CollectorError('SNMP request failed or timed out.') from None
         if len(result.stdout)>4*1024*1024:raise CollectorError('SNMP table exceeded its response limit.')
         # Never include stderr: Net-SNMP diagnostics may echo configuration tokens.
-        if result.returncode and not result.stdout:return {}
-        return parse_snmp(result.stdout)
+        rows=parse_snmp(result.stdout)
+        self.emit('warning' if result.returncode or not rows else 'response',
+                  operation+f': {len(rows)} values / exit {result.returncode}',
+                  {'duration_ms':round((time.monotonic()-started)*1000),'result':rows})
+        return rows
 
 
-def snmp_device(config,secret,address,nets,stop=lambda:False,runner=subprocess.run,client=None):
-    snmp=client or SNMP(config,secret,address,runner)
+def snmp_device(config,secret,address,nets,stop=lambda:False,runner=subprocess.run,client=None,emit=None):
+    snmp=client or SNMP(config,secret,address,runner,emit=emit)
     b=Batch(nets)
     try:
         raw=snmp.query(SYS.values())

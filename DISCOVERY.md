@@ -99,6 +99,34 @@ python3 labmap.py --plan --site example --target 10.20.0.0/24 --target 10.30.0.0
 
 ## Direct collectors
 
+### Live output
+
+Starting a scan opens the **Live output** tab below the canvas. It refreshes every
+second and shows the collector, target, UTC time, requests, response status,
+warnings, errors, and saved discovery counts. Expand **Response details** to
+inspect a sanitized inventory preview. **Follow latest output** controls automatic
+scrolling; turn it off to read an earlier entry while events continue arriving.
+The **Scan** menu reopens recorded output for the site's recent jobs, including
+failed or interrupted runs. Older jobs created before this feature have no
+detailed output. Output continues refreshing while a device/collector modal is open.
+
+HTTPS responses show status, size and timing. TrueNAS shows its WebSocket and
+JSON-RPC reads; SNMP shows requested numeric OIDs, parsed values and command status.
+Network discovery shows scan start and its parsed response when Nmap finishes;
+Nmap XML is buffered until completion, so it is not a line-by-line terminal stream.
+
+Events are stored locally in SQLite, rather than browser storage. Authorization
+headers, query parameters, authentication request/response bodies, cookies,
+command environments and stderr are excluded. Response previews use an inventory
+field allowlist, hide sensitive fields and known credential values before saving,
+and limit nesting, rows and string length. These are diagnostic previews, not
+complete raw responses. Each preview is bounded to about 6 KiB and each job to
+5,000 events plus its output-limit notice and final result. Reaching this limit
+does not stop discovery or erase earlier events. The existing local-origin guards
+also apply to output; its endpoint additionally requires the app's per-launch token.
+
+### Configure and collect
+
 Open **Collectors**, add a connection, then select **Collect inventory**. In the
 review modal, **Collectors to scan** lets you choose **All enabled collectors**
 for the current site or one named collector. Changing this choice prepares a new
