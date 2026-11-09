@@ -68,10 +68,12 @@ function render() {
 }
 function renderCanvas() {
   const hosts = currentHosts(), links = currentLinks();
-  const mobile = window.matchMedia('(max-width:720px)').matches, columns = mobile ? 1 : 3;
-  const width = mobile ? 420 : 1170;
+  const mobile = window.matchMedia('(max-width:720px)').matches;
+  const aspect = $('canvas').clientWidth / Math.max(1, $('canvas').clientHeight);
+  const columns = Math.max(mobile ? 1 : 3, Math.round(Math.sqrt(hosts.length * 185 * aspect / 370)));
+  const width = Math.max(mobile ? 420 : 1170, columns * 370 + 60);
   const positions = new Map(hosts.map((h,i) => [assetKey(h),{x:60+(i%columns)*370,y:55+Math.floor(i/columns)*185}]));
-  const height = mobile ? 450 : Math.max(400, Math.ceil(hosts.length/columns)*185+75);
+  const height = Math.max(mobile ? 450 : 400, Math.ceil(hosts.length/columns)*185+75);
   const wires = links.map(l => {
     const a=positions.get(l.src), b=positions.get(l.dst); if(!a || !b) return '';
     const physical=l.kind==='physical' && l.source==='manual', neighbor=['neighbor','learned'].includes(l.kind);
@@ -94,7 +96,7 @@ function renderTables() {
   const links=currentLinks();
   $('connections-panel').innerHTML=links.length?`<table><thead><tr><th>From</th><th>To</th><th>Relationship</th><th>Evidence</th><th>Last recorded (UTC)</th></tr></thead><tbody>${links.map(l=>`<tr><td>${escapeHTML(labelFor(l.src))}<small>${escapeHTML(l.src_port)}</small></td><td>${escapeHTML(labelFor(l.dst))}<small>${escapeHTML(l.dst_port)}</small></td><td>${escapeHTML(l.kind)}<small>${escapeHTML(l.label)}</small></td><td>${escapeHTML(l.source==='manual'?'User confirmed':l.source+' report')}</td><td>${escapeHTML(l.observed.slice(0,16).replace('T',' '))}</td></tr>`).join('')}</tbody></table>`:'<p class="empty-table">No connection evidence yet. Import RouterOS neighbors or add a connection you have verified.</p>';
   const jobs=state.jobs.filter(j=>j.site===selected),runs=state.runs.filter(r=>r.site===selected);
-  $('history-panel').innerHTML=jobs.length||runs.length?`<table><thead><tr><th>When (UTC)</th><th>Source</th><th>Result</th></tr></thead><tbody>${jobs.map(j=>`<tr><td>${escapeHTML(j.started.slice(0,16).replace('T',' '))}</td><td>Discovery scan</td><td>${escapeHTML(j.status)}<small>${escapeHTML(j.message)}</small></td></tr>`).join('')}${runs.map(r=>`<tr><td>${escapeHTML(r.observed.slice(0,16).replace('T',' '))}</td><td>${escapeHTML(r.source)}</td><td>${r.hosts} observations imported</td></tr>`).join('')}</tbody></table>`:'<p class="empty-table">Scans and imports will appear here.</p>';
+  $('history-panel').innerHTML=jobs.length||runs.length?`<table><thead><tr><th>When (UTC)</th><th>Source</th><th>Result</th></tr></thead><tbody>${jobs.map(j=>`<tr><td>${escapeHTML(j.started.slice(0,16).replace('T',' '))}</td><td>Discovery job</td><td>${escapeHTML(j.status)}<small>${escapeHTML(j.message)}</small></td></tr>`).join('')}${runs.map(r=>`<tr><td>${escapeHTML(r.observed.slice(0,16).replace('T',' '))}</td><td>${escapeHTML(r.source)}</td><td>${r.hosts} observations imported</td></tr>`).join('')}</tbody></table>`:'<p class="empty-table">Collections, scans and imports will appear here.</p>';
 }
 function editSite(site=null) {
   const form=$('site-form');form.reset();
@@ -143,7 +145,7 @@ $('search').addEventListener('input',renderTables);$('show-components').addEvent
 const tabs=['devices','connections','history'];
 function selectTab(name){for(const tab of tabs){const active=tab===name;$(tab+'-tab').setAttribute('aria-selected',String(active));$(tab+'-tab').tabIndex=active?0:-1;$(tab+'-panel').classList.toggle('hidden',!active);}}
 for(const [index,name] of tabs.entries()){$(name+'-tab').addEventListener('click',()=>selectTab(name));$(name+'-tab').addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const next=e.key==='Home'?0:e.key==='End'?2:(index+(e.key==='ArrowRight'?1:2))%3;selectTab(tabs[next]);$(tabs[next]+'-tab').focus();});}
-$('zoom-in').addEventListener('click',()=>{zoom=Math.min(2,zoom+.2);renderCanvas();});$('zoom-out').addEventListener('click',()=>{zoom=Math.max(.5,zoom-.2);renderCanvas();});$('zoom-reset').addEventListener('click',()=>{zoom=1;panX=0;panY=0;renderCanvas();});
+$('zoom-in').addEventListener('click',()=>{zoom=Math.min(8,zoom*1.25);renderCanvas();});$('zoom-out').addEventListener('click',()=>{zoom=Math.max(.5,zoom/1.25);renderCanvas();});$('zoom-reset').addEventListener('click',()=>{zoom=1;panX=0;panY=0;renderCanvas();});
 let drag = null;
 $('canvas').addEventListener('pointerdown',event=>{
   if(event.target.closest('.node'))return;
