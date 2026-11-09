@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="labmap-token" content="__LABMAP_TOKEN__">
+  <title>Lab map · Discovery workspace</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">▦</span><span>Lab map<small>Discovery workspace</small></span></a>
+      <div class="site-heading"><h2>Your sites</h2><button id="add-site" class="icon-button" aria-label="Add site">+</button></div>
+      <nav id="sites" aria-label="Sites"></nav>
+      <div class="sidebar-note"><span class="local-dot"></span>Running on this Mac<small>Inventory and corrections are saved locally.</small></div>
+    </aside>
+    <main>
+      <header class="topbar"><div><span id="breadcrumb">Your workspace</span><span id="demo-badge" class="badge hidden">Simulated preview</span></div><a href="/api/diagram.svg" download="lab-map.svg" class="text-link">Export SVG</a></header>
+      <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+      <section class="workspace-heading"><div><h1 id="site-title">Map your lab, one observation at a time.</h1><p id="site-subtitle">Add a site and the networks you want to discover.</p></div><div class="actions"><button id="edit-site" class="secondary hidden">Edit scope</button><button id="import-data" class="secondary hidden">Import results</button><button id="scan" class="primary hidden">Review scan</button></div></section>
+      <section id="empty" class="empty-state">
+        <svg viewBox="0 0 480 190" aria-hidden="true"><path d="M240 55V95M95 95H385M95 95V135M240 95V135M385 95V135"/><rect x="190" y="15" width="100" height="42" rx="6"/><rect x="45" y="135" width="100" height="42" rx="6"/><rect x="190" y="135" width="100" height="42" rx="6"/><rect x="335" y="135" width="100" height="42" rx="6"/></svg>
+        <h2>Start with a site, then discover its devices.</h2><p>Enter the VLANs and networks for any location. Review the scope before a scan, or bring in results you already have.</p><button id="first-site" class="primary">Add your first site</button>
+      </section>
+      <section id="workspace" class="hidden">
+        <div class="map-header"><div><h2>Network canvas</h2><span id="counts"></span></div><div class="map-tools"><button id="zoom-out" class="icon-button" aria-label="Zoom out">−</button><button id="zoom-reset" class="secondary">Fit</button><button id="zoom-in" class="icon-button" aria-label="Zoom in">+</button><button id="add-link" class="secondary">Add connection</button></div></div>
+        <div id="canvas" class="canvas" aria-label="Device map"></div>
+        <div class="map-legend"><span><i class="key physical"></i>Confirmed cable</span><span><i class="key neighbor"></i>Reported neighbor</span><span><i class="key logical"></i>Logical / power</span><span class="map-hint">Select a device to edit. Drag the canvas to move.</span></div>
+        <p class="snapshot-note">A scan finds responding addresses. Canvas position does not imply cabling. Neighbor reports and old observations remain available for review.</p>
+        <div class="details-header"><div class="tabs" role="tablist"><button id="devices-tab" role="tab" aria-selected="true" aria-controls="devices-panel">Devices</button><button id="connections-tab" role="tab" aria-selected="false" aria-controls="connections-panel">Connections</button><button id="history-tab" role="tab" aria-selected="false" aria-controls="history-panel">History</button></div><label class="search-label"><span class="sr-only">Filter devices</span><input id="search" type="search" placeholder="Find a name, IP or model"></label></div>
+        <div id="devices-panel" role="tabpanel" class="table-wrap"></div>
+        <div id="connections-panel" role="tabpanel" class="table-wrap hidden"></div>
+        <div id="history-panel" role="tabpanel" class="table-wrap hidden"></div>
+      </section>
+      <footer>Proxmox, RouterOS, TrueNAS, physical servers and power equipment can share one inventory. Automated hardware collectors are the next step.</footer>
+    </main>
+  </div>
+
+  <dialog id="site-dialog"><form id="site-form"><div class="dialog-heading"><h2 id="site-dialog-title">Add a site</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><label>Site name<input name="label" placeholder="Home lab" required maxlength="200"></label><label>Site ID<input name="id" placeholder="home" required pattern="[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}" maxlength="40"><small>Used to keep observations separate between locations.</small></label><label>Networks and individual IPs<textarea name="targets" rows="5" placeholder="10.20.0.0/24&#10;10.30.0.0/24" required></textarea><small>One per line, or separated by commas. IPv4 and IPv6; up to 4,096 addresses per plan. Use small IPv6 scopes or individual addresses.</small></label><label class="checkbox"><input type="checkbox" name="allow_public">Include non-private addresses that I own or have permission to scan</label><p class="muted">Changing scope preserves existing observations and corrections.</p><p class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary close-dialog">Cancel</button><button class="primary" type="submit">Save site</button></div></form></dialog>
+
+  <dialog id="scan-dialog"><div class="dialog-heading"><h2>Review discovery scan</h2><button class="icon-button close-dialog" aria-label="Close">×</button></div><p id="plan-summary"></p><div id="plan-targets" class="target-list"></div><p>Host discovery only, with DNS lookups disabled. No service scan, OS detection, scripts, or configuration changes. Without administrator privileges, Nmap uses TCP connection probes to ports 80 and 443; devices that ignore them may be missed.</p><details><summary>Exact commands</summary><pre id="plan-command"></pre></details><p class="muted">Only start this scan for systems you own or are authorized to assess.</p><p class="form-error" role="alert"></p><div class="dialog-actions"><button class="secondary close-dialog">Cancel</button><button id="start-scan" class="primary">Start discovery</button></div></dialog>
+
+  <dialog id="device-dialog"><form id="device-form"><div class="dialog-heading"><h2>Edit device</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><p id="device-address" class="address"></p><input type="hidden" name="site"><input type="hidden" name="address"><label>Display name<input name="name" maxlength="200" placeholder="Use the discovered hostname"></label><label>Role<input name="role" maxlength="200" list="roles" placeholder="e.g. Proxmox host"><datalist id="roles"><option>Router</option><option>Switch</option><option>Proxmox host</option><option>TrueNAS</option><option>Physical server</option><option>VM</option><option>Container</option><option>UPS</option><option>PDU</option><option>Access point</option></datalist></label><label>Hardware model<input name="model" maxlength="200" placeholder="e.g. Dell PowerEdge R740"></label><label>Notes<textarea name="notes" rows="3" maxlength="1000" placeholder="Rack position, hardware details, or anything to verify"></textarea></label><p class="muted">Your corrections are stored separately from discoveries and survive rescans.</p><p class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary close-dialog">Cancel</button><button class="primary" type="submit">Save device</button></div></form></dialog>
+
+  <dialog id="import-dialog"><form id="import-form"><div class="dialog-heading"><h2>Import discovery results</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><label>Result type<select name="format"><option value="nmap">Nmap XML</option><option value="routeros">RouterOS neighbor JSON</option></select></label><label id="observer-field" class="hidden">Reporting router IP<input name="observer" placeholder="10.20.0.1"><small>The device whose /rest/ip/neighbor response you are importing.</small></label><label>Result file<input type="file" name="file" accept=".xml,.json"></label><label>Or paste result data<textarea name="contents" rows="5" maxlength="3145728" placeholder="Paste Nmap XML or a RouterOS neighbor JSON array"></textarea></label><p>Only inventory fields are imported. Script output, credentials, and service banners are not saved. Every device address must be within this site's saved scope.</p><p class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary close-dialog">Cancel</button><button class="primary" type="submit">Import results</button></div></form></dialog>
+
+  <dialog id="link-dialog"><form id="link-form"><div class="dialog-heading"><h2>Add a confirmed connection</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><label>From device<select name="src" required></select></label><label>From port / outlet<input name="src_port" maxlength="100" placeholder="ether3, outlet 2, or leave blank"></label><label>To device<select name="dst" required></select></label><label>To port / inlet<input name="dst_port" maxlength="100" placeholder="eno1, PSU 1, or leave blank"></label><label>Connection type<select name="kind"><option value="physical">Physical network cable</option><option value="power">Power feed</option><option value="hosts">Hosts a VM / container</option><option value="storage">Storage dependency</option><option value="vpn">VPN / logical network</option></select></label><label>Label<input name="label" maxlength="200" placeholder="10G uplink, redundant feed, or another detail"></label><p class="muted">Connections are within one site in this first version. Add the same endpoints and ports again to update their label.</p><p class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary close-dialog">Cancel</button><button class="primary" type="submit">Save connection</button></div></form></dialog>
+</body>
+</html>

@@ -10,6 +10,19 @@ The script behind the network diagram of my homelab that I posted on r/homelab. 
 > [!NOTE]
 > **The code was written by AI.** I built this together with Claude (Anthropic) in Claude Code. I described what I wanted and gave feedback on every render, Claude wrote and changed the code. A few example prompts are at the end of this README.
 
+## Local discovery WebUI (fork addition)
+
+This fork also includes a native Mac-friendly discovery workspace. Run
+`python3 labmap.py` and open the loopback URL it prints. Add sites and explicit
+network scopes, review a host-discovery scan, import Nmap XML or RouterOS neighbor
+JSON, edit device details, and record verified connections. Inventory and
+corrections are saved in a local SQLite database; the UI does not use localStorage.
+The workspace uses Python's standard library and an existing Nmap installation.
+No lab scan starts until its plan is confirmed in the WebUI.
+
+See [DISCOVERY.md](DISCOVERY.md) for usage, privacy, limitations, and tests.
+The original YAML renderer and example below remain available unchanged.
+
 ## What it shows
 
 - the path from the internet through the ISP router (with its real ports) and the firewall to the core switch
