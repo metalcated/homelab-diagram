@@ -555,3 +555,15 @@
                                                                                                                                                                                                                                                                                     *{
                                                                                                                                                                                                                                                                                       scroll-behavior:auto}
                                                                                                                                                                                                                                                                                     }
+
+.component-toggle{display:flex;align-items:center;gap:6px;margin:0;font-size:11px;color:var(--muted);font-weight:400}
+.component-toggle input{width:14px;margin:0}
+.source-card{border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:12px}
+.source-card .source-title{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.source-card p{margin-top:6px;overflow-wrap:anywhere;font-size:12px}
+.source-card button{font-size:12px;padding:5px 12px}
+.two-fields{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.target-list{max-height:230px;overflow:auto}
+.actions{justify-content:flex-end}
+.workspace-heading{align-items:flex-start}
+@media(max-width:1050px){.component-toggle{margin-left:auto}.map-header>div:first-child{flex-wrap:wrap}}

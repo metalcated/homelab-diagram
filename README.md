@@ -14,8 +14,9 @@ The script behind the network diagram of my homelab that I posted on r/homelab. 
 
 This fork also includes a native Mac-friendly discovery workspace. Run
 `python3 labmap.py` and open the loopback URL it prints. Add sites and explicit
-network scopes, review a host-discovery scan, import Nmap XML or RouterOS neighbor
-JSON, edit device details, and record verified connections. Inventory and
+network scopes, run reviewed discovery, and connect directly to RouterOS, Proxmox,
+TrueNAS, iDRAC, APC/CyberPower and SNMP agents. Collectors identify assets and
+relationships automatically; device details and verified connections remain editable. Inventory and
 corrections are saved in a local SQLite database; the UI does not use localStorage.
 The workspace uses Python's standard library and an existing Nmap installation.
 No lab scan starts until its plan is confirmed in the WebUI.

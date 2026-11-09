@@ -21,6 +21,10 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 
+import asset_inventory
+from collector_workspace import CollectorManager
+from direct_collectors import CATALOG
+
 ROOT = Path(__file__).resolve().parent
 MAX_INPUT = 4 * 1024 * 1024
 MAX_ADDRESSES = 4096
@@ -188,7 +192,21 @@ class Store:
         fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
         os.close(fd)
         with closing(self.connect()) as db:
-            db.executescript(SCHEMA)
+            legacy = db.execute("SELECT 1 FROM sqlite_master WHERE name='hosts'").fetchone()
+            upgraded = db.execute("SELECT 1 FROM sqlite_master WHERE name='assets'").fetchone()
+            if legacy and not upgraded:
+                folder=self.path.parent/'backups'
+                folder.mkdir(exist_ok=True,mode=0o700)
+                backup=folder/(self.path.stem+'-before-collectors-'+secrets.token_hex(6)+'.sqlite')
+                handle=os.open(backup,os.O_CREAT|os.O_EXCL|os.O_RDWR,0o600);os.close(handle)
+                with closing(sqlite3.connect(backup)) as destination:
+                    db.backup(destination)
+            db.executescript(SCHEMA+asset_inventory.SCHEMA)
+            migrated=db.execute("SELECT 1 FROM settings WHERE key='asset_migration_v1'").fetchone()
+            if not migrated:
+                with db:
+                    asset_inventory.migrate_legacy(db)
+                    db.execute("INSERT INTO settings VALUES ('asset_migration_v1','complete')")
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=10)
@@ -226,6 +244,7 @@ class Store:
                 db.execute("""INSERT INTO links VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(site,src,dst,src_port,dst_port,kind,source)
                   DO UPDATE SET label=excluded.label, observed=excluded.observed WHERE excluded.observed>=links.observed""",
                   (site, link["src"], link["dst"], link["src_port"], link["dst_port"], link["kind"], link["label"], link["source"], observed))
+            asset_inventory.ingest(db,site,source,asset_inventory.legacy_batch(hosts,links),observed)
             db.execute("INSERT INTO runs(site,source,observed,hosts) VALUES (?,?,?,?)", (site, source, observed, len({h["address"] for h in hosts})))
 
     def import_data(self, site, format_, text, observer=""):
@@ -242,20 +261,29 @@ class Store:
 
     def annotate(self, p):
         with closing(self.connect()) as db, db:
+            if p.get('asset_id'):
+                asset_inventory.annotate(db,p)
+                return
             if not db.execute("SELECT 1 FROM hosts WHERE site=? AND address=?", (p.get("site"), p.get("address"))).fetchone():
                 raise ValueError("Device not found in this site.")
             db.execute("""INSERT INTO annotations VALUES (?,?,?,?,?,?) ON CONFLICT(site,address) DO UPDATE SET
               name=excluded.name, role=excluded.role, model=excluded.model, notes=excluded.notes""",
               (p["site"], p["address"], clean(p.get("name")), clean(p.get("role")), clean(p.get("model")), clean(p.get("notes"), 1000)))
+            match=db.execute("SELECT asset_id FROM asset_keys WHERE site=? AND kind='ip' AND value=?",(p['site'],p['address'])).fetchone()
+            if match:asset_inventory.annotate(db,{**p,'asset_id':match[0]})
 
     def link(self, p):
         site = site_id(p.get("site"))
         kind = p.get("kind")
-        if kind not in ("physical", "power", "hosts", "storage", "vpn"):
+        if kind not in ("physical", "power", "hosts", "storage", "vpn", "contains"):
             raise ValueError("Choose a valid connection type.")
         if p.get("src") == p.get("dst"):
             raise ValueError("A connection must join two different devices.")
         with closing(self.connect()) as db, db:
+            identities=[db.execute("SELECT id FROM assets WHERE site=? AND id=?",(site,p.get(end))).fetchone() for end in ('src','dst')]
+            if all(identities):
+                asset_inventory.save_relation(db,site,p['src'],p['dst'],p,'manual',now())
+                return
             for addr in (p.get("src"), p.get("dst")):
                 if not db.execute("SELECT 1 FROM hosts WHERE site=? AND address=?", (site, addr)).fetchone():
                     raise ValueError("Both devices must exist in the selected site.")
@@ -272,10 +300,11 @@ class Store:
             jobs = [dict(r) for r in db.execute("SELECT * FROM jobs ORDER BY started DESC, rowid DESC LIMIT 20")]
             runs = [dict(r) for r in db.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 20")]
             demo = db.execute("SELECT value FROM settings WHERE key='demo'").fetchone()
+            inventory=asset_inventory.state(db)
         for site in sites:
             site["targets"] = json.loads(site["targets"])
             site["allow_public"] = bool(site["allow_public"])
-        return {"sites": sites, "hosts": hosts, "links": links, "jobs": jobs, "runs": runs,
+        return {**inventory,"sites": sites, "hosts": hosts, "links": links, "jobs": jobs, "runs": runs,
                 "demo": bool(demo), "nmap_available": shutil.which("nmap") is not None}
 
 
@@ -304,7 +333,7 @@ def diagram(state, selected=None):
     sites = [s for s in state["sites"] if selected is None or s["id"] == selected]
     blocks, y = [], 135
     for site in sites:
-        devices = sorted((h for h in state["hosts"] if h["site"] == site["id"]), key=lambda h: (ipaddress.ip_address(h["address"]).version, int(ipaddress.ip_address(h["address"]))))
+        devices = sorted((h for h in state.get("assets",state["hosts"]) if h["site"] == site["id"]), key=lambda h: h.get("name") or h.get("hostname") or h.get("address",""))
         rows = max(1, (len(devices) + 2) // 3)
         height = 85 + rows * 150
         blocks.append(f'<rect x="24" y="{y}" width="1152" height="{height}" rx="14" fill="#111f2d" stroke="#354859"/>')
@@ -314,21 +343,22 @@ def diagram(state, selected=None):
             blocks.append(f'<text x="48" y="{y+112}" class="muted">No observations yet. Review a scan plan or import a result.</text>')
         for i, host in enumerate(devices):
             x, top = 48 + (i % 3) * 376, y + 82 + (i // 3) * 150
-            lines = [host.get("name") or host["hostname"] or host["address"], host["address"],
+            lines = [host.get("name") or host["hostname"] or host["address"] or host.get("mac") or "Unidentified asset", host["address"] or "No IP reported",
                      host.get("role") or "Device type unverified", host.get("manual_model") or host["model"] or host["vendor"] or "Model unknown",
                      f'{host["source"]} / {host["last_seen"][:16]} UTC']
             blocks.append(f'<rect x="{x}" y="{top}" width="352" height="132" rx="8" fill="#192c3c" stroke="#486276"/>')
             for j, line in enumerate(lines):
                 blocks.append(f'<text x="{x+16}" y="{top+25+j*22}" class="{"name" if j==0 else "muted"}" ><title>{esc(line)}</title>{esc(line[:43] + ("…" if len(line)>43 else ""))}</text>')
         y += height + 24
-    links = [l for l in state["links"] if selected is None or l["site"] == selected]
+    links = [l for l in state.get("asset_links",state["links"]) if selected is None or l["site"] == selected]
+    labels={h["id"]:h.get("name") or h["address"] for h in state.get("assets",[])}
     blocks.append(f'<text x="32" y="{y+22}" class="site">Reported and confirmed connections</text>')
     y += 50
     if not links:
         blocks.append(f'<text x="32" y="{y}" class="muted">No connection evidence yet. Import neighbors or add a confirmed connection.</text>')
         y += 34
     for link in links:
-        label = f'{link["site"]}: {link["src"]} {link["src_port"]} → {link["dst"]} {link["dst_port"]}'
+        label = f'{link["site"]}: {labels.get(link["src"],link["src"])} {link["src_port"]} → {labels.get(link["dst"],link["dst"])} {link["dst_port"]}'
         detail = f'{link["kind"]} / {link["source"]} / {link["label"]} / observed {link["observed"][:16]} UTC'
         blocks.append(f'<rect x="24" y="{y}" width="1152" height="64" rx="8" fill="#192c3c"/><text x="40" y="{y+25}" class="name">{esc(label)}</text><text x="40" y="{y+47}" class="muted">{esc(detail[:155])}</text>')
         y += 76
@@ -349,14 +379,20 @@ class Workspace:
         self.running = False
         self.process_lock = threading.Lock()
         self.process = None
+        self.processes = set()
         self.stopping = False
         self.thread = None
+        self.collectors=CollectorManager(self,scopes)
         with closing(store.connect()) as db, db:
             db.execute("UPDATE jobs SET status='interrupted',finished=?,message='App stopped before completion. Review and retry the scan.' WHERE status='running'", (now(),))
 
     def plan(self, site):
         saved = self.store.get_site(site)
         plan = make_plan(site, saved["targets"], saved["allow_public"])
+        self.register_plan(plan)
+        return plan
+
+    def register_plan(self,plan):
         nonce = secrets.token_urlsafe(24)
         plan["id"] = hmac.new(self.token.encode(), nonce.encode(), hashlib.sha256).hexdigest()
         with self.lock:
@@ -375,11 +411,13 @@ class Workspace:
                 raise ValueError("A scan is already running. Wait for it to finish.")
             plan = item[1]
             saved = self.store.get_site(plan["site"])
-            if make_plan(saved["id"], saved["targets"], saved["allow_public"])["commands"] != plan["commands"]:
+            if plan.get("kind")=="collectors":
+                self.collectors.validate_plan(plan)
+            elif make_plan(saved["id"], saved["targets"], saved["allow_public"])["commands"] != plan["commands"]:
                 raise ValueError("Site scope changed. Review a fresh plan.")
             job = secrets.token_hex(8)
             with closing(self.store.connect()) as db, db:
-                db.execute("INSERT INTO jobs VALUES (?,?, 'running',?,NULL,?,?)", (job, plan["site"], now(), "Discovering responding hosts", json.dumps(plan["targets"])))
+                db.execute("INSERT INTO jobs VALUES (?,?, 'running',?,NULL,?,?)", (job, plan["site"], now(), "Collecting direct inventory" if plan.get("kind")=="collectors" else "Discovering responding hosts", json.dumps(plan["targets"])))
             self.running = True
             self.plans.pop(plan["id"])
         self.thread = threading.Thread(target=self.worker, args=(job, plan), daemon=True)
@@ -390,8 +428,9 @@ class Workspace:
         with self.process_lock:
             if self.stopping:
                 raise ValueError("Discovery stopped with the app.")
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,env=options.get("env"))
             self.process = process
+            self.processes.add(process)
         try:
             try:
                 stdout, stderr = process.communicate(timeout=options["timeout"])
@@ -402,24 +441,29 @@ class Workspace:
             return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         finally:
             with self.process_lock:
-                self.process = None
+                self.processes.discard(process)
+                self.process = next(iter(self.processes),None)
 
     def stop(self):
         with self.process_lock:
             self.stopping = True
-            process = self.process
-            if process is not None and process.poll() is None:
-                process.terminate()
+            processes=self.processes|({self.process} if self.process is not None else set())
+            for process in processes:
+                if process.poll() is None:process.terminate()
         if self.thread is not None:
             self.thread.join(timeout=3)
-            if self.thread.is_alive() and process is not None and process.poll() is None:
-                process.kill()
-                self.thread.join(timeout=3)
+            if self.thread.is_alive():
+                for process in processes:
+                    if process.poll() is None:process.kill()
+                self.thread.join(timeout=10)
 
     def worker(self, job, plan):
         try:
-            count = run_scan(plan, self.store, self.execute_command)
-            status, message = "complete", f"Observed {count} addresses. Existing labels and earlier observations were preserved."
+            if plan.get("kind")=="collectors":
+                status,message=self.collectors.collect(plan)
+            else:
+                count = run_scan(plan, self.store, self.execute_command)
+                status, message = "complete", f"Observed {count} addresses. Existing labels and earlier observations were preserved."
         except (ValueError, OSError, subprocess.SubprocessError, sqlite3.Error) as exc:
             status, message = "failed", clean(str(exc), 500)
         with closing(self.store.connect()) as db, db:
@@ -456,7 +500,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed():
             return self.send(403, {"error": "Use the local URL printed by the app."})
         if self.path == "/api/state":
-            return self.send(200, self.server.workspace.store.state())
+            app=self.server.workspace
+            return self.send(200,{**app.store.state(),"collectors":app.collectors.connections(),"collector_catalog":CATALOG,"keychain_available":app.collectors.vault.keychain is not None})
         if self.path == "/api/diagram.svg":
             return self.send(200, diagram(self.server.workspace.store.state()), "image/svg+xml")
         assets = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"), "/style.css": ("style.css", "text/css")}
@@ -481,6 +526,10 @@ class Handler(BaseHTTPRequestHandler):
             app = self.server.workspace
             if self.path == "/api/sites":
                 result = app.store.save_site(payload)
+            elif self.path == "/api/collectors/save":
+                result=app.collectors.save(payload)
+            elif self.path == "/api/collectors/plan":
+                result=app.collectors.plan(payload.get("site"),payload.get("connections"))
             elif self.path == "/api/plan":
                 result = app.plan(payload.get("site"))
             elif self.path == "/api/scan":

@@ -45,8 +45,8 @@ a fresh review plan. Interrupted jobs are identified on app restart.
 
 Choose **Import results** and select a local file or paste its contents. Nmap imports require complete,
 successful `-oX` XML output. RouterOS imports accept the JSON array returned by
-`GET /rest/ip/neighbor`; enter the reporting router's IP as well. This first
-version imports an existing response rather than connecting to RouterOS itself.
+`GET /rest/ip/neighbor`; enter the reporting router's IP as well. This optional import path accepts an existing response; use the direct
+RouterOS collector for automatic collection.
 Do not enable services or change neighbor settings just for an import.
 
 Every imported IP, including the observer, must be in the saved site scope. The
@@ -57,8 +57,8 @@ it as a physical cable. Ports, link speed, and power feeds are never guessed fro
 IP addresses, vendor names, or proximity on the canvas.
 
 Only selected inventory fields are saved. Nmap script output, service banners,
-API secrets, and complete raw responses are not retained. Device identity in this
-first version is site + IP; review manual labels after DHCP address reuse.
+API secrets, and complete raw responses are not retained. Address observations remain scoped by site. The asset layer adds provider,
+hardware and MAC identities; review conflicts and DHCP address reuse.
 Connections remain as timestamped evidence when a later import omits them; their
 continued presence is not proof that a connection still exists.
 
@@ -71,8 +71,8 @@ database paths and exported diagrams out of public commits. Exported SVG is a
 private snapshot and is **not redacted**. It contains observed IPs and names.
 
 The app does not use localStorage. Browser requests that change data require a
-per-launch token, and mismatched Host/Origin requests are refused. No credentials
-are needed or stored in this version. The existing `inventory.yaml`, `build.py`,
+per-launch token, and mismatched Host/Origin requests are refused. Direct collector credentials can be kept for the session or explicitly saved
+in macOS Keychain; they are never stored in SQLite. The existing `inventory.yaml`, `build.py`,
 and icon workflow remain unchanged; the original hand-placed renderer does not
 consume the discovery database yet.
 
@@ -97,17 +97,115 @@ network probes:
 python3 labmap.py --plan --site example --target 10.20.0.0/24 --target 10.30.0.0/24
 ```
 
-## Current boundary and next collectors
+## Direct collectors
 
-This is an initial discovery inventory and review workspace. It does not yet
-authenticate to Proxmox, TrueNAS, iDRAC/Redfish, UPS SNMP/NUT, or RouterOS, and it
-does not yet correlate multiple NICs/IPs into a physical asset, track MAC-only or
-USB-only equipment, or connect devices across sites. Those need version-checked,
-read-only collectors and evidence-based identity matching. A network sweep alone
-cannot establish which VM runs on which Dell, which storage pool backs it, or
-which UPS outlet powers it.
+Open **Collectors**, add a connection, then select **Collect inventory** and review
+its scope. One connection can discover many assets; guests, storage and hardware
+parts do not need manually assigned roles. The optional importer is not part of
+the normal direct-collection workflow.
 
-Protocol references: [Nmap host discovery](https://nmap.org/book/man-host-discovery.html),
-[Nmap XML](https://nmap.org/book/output-formats-xml-output.html),
-[RouterOS neighbor fields](https://manual.mikrotik.com/docs/cli-reference/ip/neighbor/),
-and [RouterOS REST](https://help.mikrotik.com/docs/spaces/ROS/pages/47579162/REST+API).
+| Collector | Read protocol | Automatically records |
+| --- | --- | --- |
+| RouterOS 7 REST | HTTPS GET | Identity, board, interfaces, addresses, neighbors, ARP/DHCP identities, bridge forwarding entries, VLANs, ports, routes |
+| Proxmox VE | HTTPS API token | Cluster nodes, VMs, containers, CPU/memory information, network configuration, guest placement and storage dependencies |
+| TrueNAS 25.04+ | WSS JSON-RPC | System hardware, interfaces, pools, disks, SMB/NFS shares and storage relationships |
+| Dell iDRAC with Redfish | HTTPS GET | System model, serial, UUID, host NICs, processors, memory and storage inventory |
+| APC / CyberPower | SNMP GET / GETBULK | Enterprise identity, UPS model/serial and supported battery/runtime/load values |
+| SNMP discovery / auto-detect | SNMPv2c or SNMPv3 | Responding agents across the site scope, names, chassis identity, interface MACs/speeds, LLDP and forwarding-table observations |
+
+For a shared SNMP profile, leave its management IP blank and select **SNMP
+discovery / auto-detect**. The profile queries the explicit site scope directly;
+it does not depend on a successful TCP/Nmap discovery first. This finds
+SNMP-only agents and automatically classifies supported vendors. SNMP ports are
+configurable (default UDP/161); IPv4 and IPv6 use their respective transports.
+Four agent collections can run concurrently, with starts paced at four agents per
+second. Each command has a timeout, and
+per-source failures remain visible. Unavailable optional read endpoints produce a
+partial result rather than erasing the facts that were successfully collected.
+
+An API endpoint must resolve into the site's saved scope. Its resolved address is
+pinned into the review plan. Collection does not automatically follow discovered
+routes into new subnets. A saved site or connection change invalidates its old
+plan. Newly reported out-of-scope addresses are not treated as authorized scan
+targets. SNMP uses the saved networks directly and never issues SET requests.
+
+### Accounts and credentials
+
+Use existing accounts with inventory/read permissions. No collector creates an
+account, enables a management service, changes router settings, controls a UPS,
+or starts/stops guests. Proxmox expects `user@realm!tokenid` plus the token secret;
+permissions depend on both user and token ACLs. TrueNAS expects the API-key user
+and key (READONLY_ADMIN for the general hardware inventory, with optional methods
+subject to their own roles). RouterOS/iDRAC use username and password. SNMPv3
+supports noAuthNoPriv, authNoPriv, and authPriv with the SHA/MD5 and AES/DES
+protocols supported by the installed Net-SNMP client; choose SHA/AES where the
+agent supports it. SNMPv2c communities are not encrypted on the wire.
+
+Credentials stay in memory for the app session unless **Save entered credentials
+in macOS Keychain** is explicitly selected. Keychain storage uses native Security
+framework calls; secrets are not passed to the `security` command. SQLite stores
+connection settings and a Keychain/session reference, never the credentials.
+Credentials are not returned in state/plan responses. Blank credential fields
+retain the existing secret on edits; updating one SNMPv3 passphrase preserves the
+other. Re-enter credentials if the account or collector type changes.
+
+Net-SNMP reads credentials from a short-lived mode-0600 config inside a private
+temporary directory. Its arguments contain no community or passphrases. The
+config is cleaned up after each agent collection, and Net-SNMP diagnostics are
+not copied into the inventory or job history. Password fields are cleared after
+a successful save. Synthetic tests do not create real Keychain entries.
+
+HTTPS/WSS uses normal certificate and hostname verification. For an existing
+self-signed management certificate, an independently verified SHA-256 fingerprint
+can be entered for that connection. The pin is checked before credentials are
+sent; a mismatch aborts collection. There is no general insecure-TLS option.
+HTTP redirects and cross-origin Redfish resource links are not followed.
+
+### Asset matching and evidence
+
+The asset layer supports records without IP addresses and correlates provider
+IDs, hardware UUIDs, vendor serials, MACs and scoped IPs. It enriches the original
+address observations rather than replacing them. Matching guest/physical hardware
+conflicts are flagged for review, and hostname similarity alone never merges
+assets. Manual overrides survive refreshes. Low-information placeholders can be
+redirected to the enriched asset without deleting their underlying records.
+
+Proxmox supplies host/guest placement and storage relationships directly. RouterOS
+and SNMP supply reported neighbors and learned forwarding relationships. A learned
+MAC or ARP entry is not certified as a direct physical cable. Serial/UUID/MAC/IP
+matching depends on what the device actually exposes; conflicting or reused
+identities need review. A VM's IP can be learned from container configuration or
+correlated MAC/address evidence, but a VM with no reported address still appears
+under its host. Missing optional methods or fields are shown in collector results.
+
+Hardware parts can be shown with **Hardware parts** on the canvas. Select a device
+and expand **Discovered hardware and source data** to see its attributes and review
+notes. UPS battery values never imply which server is connected to which outlet.
+Power feeds require independent evidence or user confirmation. USB-only UPS units
+need an existing network/SNMP agent; this version does not install one. Older
+TrueNAS REST-only systems and non-Redfish iDRAC generations are not supported by
+those direct API adapters; generic SNMP can still collect fields they expose.
+
+### Existing inventory and recovery
+
+The first upgrade creates a mode-0600 SQLite backup in `private/backups/` before
+adding asset tables. Existing sites, host observations, annotations, connections,
+runs and jobs are preserved. The original host tables and YAML renderer remain
+available. A code rollback to the previous commit can use the original tables;
+the saved pre-upgrade database is also available for explicit restoration. Stop
+the app before replacing a database, and do not overwrite a newer backup.
+
+Local tests cover protocol fixtures, fifty-guest discovery, saved edits, partial
+permissions, credential handling, TLS/redirect guards, matching conflicts,
+legacy-data preservation, and the installed Net-SNMP command against a synthetic
+loopback agent. Real management devices and credentials must be validated through
+the configured WebUI connections; fixture tests do not establish live-provider
+compatibility.
+
+Protocol references: [RouterOS REST](https://help.mikrotik.com/docs/spaces/ROS/pages/47579162/REST+API),
+[Proxmox API](https://pve.proxmox.com/wiki/Proxmox_VE_API),
+[TrueNAS API](https://api.truenas.com/),
+[Dell Redfish examples](https://github.com/dell/iDRAC-Redfish-Scripting),
+[Net-SNMP config](https://www.net-snmp.org/docs/man/snmp.conf.html),
+[standard UPS MIB](https://www.rfc-editor.org/rfc/rfc1628), and
+[CyberPower/APC MIB support](https://github.com/networkupstools/nut/tree/master/drivers).

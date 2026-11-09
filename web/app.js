@@ -23,8 +23,14 @@ function openDialog(id) {
   dialog.showModal();
 }
 function currentSite() { return state.sites.find(s => s.id === selected); }
-function currentHosts() { return state.hosts.filter(h => h.site === selected); }
-function hostName(host) { return host.name || host.hostname || host.address; }
+function currentHosts() {
+  const parts=new Set(['CPU','Memory module','Storage controller','Disk']);
+  return (state.assets||state.hosts).filter(h=>h.site===selected&&($('show-components').checked||!parts.has(h.auto_role||h.role)));
+}
+function assetKey(h){return h.id||h.address;}
+function currentLinks(){return (state.asset_links||state.links).filter(l=>l.site===selected);}
+function labelFor(id){const host=(state.assets||state.hosts).find(h=>assetKey(h)===id);return host?hostName(host):id;}
+function hostName(host) { return host.name || host.hostname || host.address || host.mac || 'Unidentified asset'; }
 function deviceModel(host) { return host.manual_model || host.model || host.vendor || 'Model unknown'; }
 function clip(text, limit=29) { return text.length > limit ? text.slice(0,limit-1)+'…' : text; }
 function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
@@ -40,39 +46,40 @@ async function refresh() {
   finally { refreshPending = false; }
 }
 function render() {
-  $('demo-badge').classList.toggle('hidden', !state.demo);
-  $('sites').innerHTML = state.sites.map(s => `<button class="site-button ${s.id === selected ? 'active' : ''}" data-site="${escapeHTML(s.id)}">${escapeHTML(s.label)}<span>${state.hosts.filter(h => h.site===s.id).length} observed addresses</span></button>`).join('');
+  $('demo-badge').classList.toggle('hidden', !(state.demo||state.simulated));
+  $('sites').innerHTML = state.sites.map(s => `<button class="site-button ${s.id === selected ? 'active' : ''}" data-site="${escapeHTML(s.id)}">${escapeHTML(s.label)}<span>${(state.assets||state.hosts).filter(h => h.site===s.id).length} assets</span></button>`).join('');
   $('sites').querySelectorAll('[data-site]').forEach(b => b.addEventListener('click', () => { selected=b.dataset.site; zoom=1; panX=0; panY=0; render(); }));
   const site = currentSite();
   $('empty').classList.toggle('hidden', !!site);
   $('workspace').classList.toggle('hidden', !site);
-  for (const id of ['edit-site','import-data','scan']) $(id).classList.toggle('hidden', !site);
+  for (const id of ['edit-site','import-data','scan','manage-collectors','collect-inventory']) $(id).classList.toggle('hidden', !site);
   $('breadcrumb').textContent = site ? 'Your workspace / ' + site.label : 'Your workspace';
   $('site-title').textContent = site ? site.label : 'Map your lab, one observation at a time.';
   $('site-subtitle').textContent = site ? site.targets.join(' / ') : 'Add a site and the networks you want to discover.';
   if (!site) return;
   const running = state.jobs.some(j => j.status === 'running');
+  $('collect-inventory').disabled=running||!(state.collectors||[]).some(c=>c.site===selected&&c.enabled);
   $('scan').disabled = running || !state.nmap_available;
   $('scan').textContent = running ? 'Discovery running…' : 'Review scan';
   $('scan').title = state.nmap_available ? '' : 'Nmap is unavailable. Import existing results or install Nmap separately.';
   $('add-link').disabled = currentHosts().length < 2;
-  $('counts').textContent = `${currentHosts().length} addresses / ${state.links.filter(l => l.site===selected).length} connections`;
+  $('counts').textContent = `${currentHosts().length} assets / ${currentLinks().length} relationships`;
   renderCanvas(); renderTables();
 }
 function renderCanvas() {
-  const hosts = currentHosts(), links = state.links.filter(l => l.site===selected);
+  const hosts = currentHosts(), links = currentLinks();
   const mobile = window.matchMedia('(max-width:720px)').matches, columns = mobile ? 1 : 3;
   const width = mobile ? 420 : 1170;
-  const positions = new Map(hosts.map((h,i) => [h.address,{x:60+(i%columns)*370,y:55+Math.floor(i/columns)*185}]));
+  const positions = new Map(hosts.map((h,i) => [assetKey(h),{x:60+(i%columns)*370,y:55+Math.floor(i/columns)*185}]));
   const height = mobile ? 450 : Math.max(400, Math.ceil(hosts.length/columns)*185+75);
   const wires = links.map(l => {
     const a=positions.get(l.src), b=positions.get(l.dst); if(!a || !b) return '';
-    const physical=l.kind==='physical' && l.source==='manual', neighbor=l.kind==='neighbor';
+    const physical=l.kind==='physical' && l.source==='manual', neighbor=['neighbor','learned'].includes(l.kind);
     const color=physical?'#78c4b1':neighbor?'#e7b45c':'#ada1df';
     const startX=a.x+300, endX=b.x, mid=(startX+endX)/2;
-    return `<path d="M${startX},${a.y+62} C${mid+60},${a.y+62} ${mid-60},${b.y+62} ${endX},${b.y+62}" fill="none" stroke="${color}" stroke-width="${physical?3:2}" ${physical?'':'stroke-dasharray="6 5"'}><title>${escapeHTML(`${l.kind}: ${l.src} ${l.src_port} to ${l.dst} ${l.dst_port}; ${l.source}; ${l.label}`)}</title></path>`;
+    return `<path d="M${startX},${a.y+62} C${mid+60},${a.y+62} ${mid-60},${b.y+62} ${endX},${b.y+62}" fill="none" stroke="${color}" stroke-width="${physical?3:2}" ${physical?'':'stroke-dasharray="6 5"'}><title>${escapeHTML(`${l.kind}: ${labelFor(l.src)} ${l.src_port} to ${labelFor(l.dst)} ${l.dst_port}; ${l.source}; ${l.label}`)}</title></path>`;
   }).join('');
-  const cards=hosts.map((h,i) => {const p=positions.get(h.address);return `<g class="node" tabindex="0" role="button" aria-label="Edit ${escapeHTML(hostName(h))}" data-device-index="${i}" transform="translate(${p.x},${p.y})"><title>${escapeHTML(hostName(h)+' / '+deviceModel(h))}</title><rect class="node-body" width="300" height="125" rx="8" fill="#1b3041" stroke="#48667d"/><path d="M1 24H299" stroke="#324b60"/><circle cx="16" cy="12" r="3" fill="#78c4b1"/><text x="28" y="16" class="node-detail">${escapeHTML(h.source==='simulated'?'Simulated observation':h.source+' observation')}</text><text x="16" y="51" class="node-title">${escapeHTML(clip(hostName(h)))}</text><text x="16" y="76" class="node-address">${escapeHTML(h.address)}</text><text x="16" y="99" class="node-detail">${escapeHTML(clip(h.role || deviceModel(h)))}</text><text x="16" y="116" class="node-detail">${escapeHTML(h.role ? clip(deviceModel(h)) : 'Role unverified')}</text></g>`;}).join('');
+  const cards=hosts.map((h,i) => {const p=positions.get(assetKey(h));return `<g class="node" tabindex="0" role="button" aria-label="Edit ${escapeHTML(hostName(h))}" data-device-index="${i}" transform="translate(${p.x},${p.y})"><title>${escapeHTML(hostName(h)+' / '+deviceModel(h))}</title><rect class="node-body" width="300" height="125" rx="8" fill="#1b3041" stroke="#48667d"/><path d="M1 24H299" stroke="#324b60"/><circle cx="16" cy="12" r="3" fill="#78c4b1"/><text x="28" y="16" class="node-detail">${escapeHTML(h.source==='simulated'?'Simulated observation':h.source+' observation')}</text><text x="16" y="51" class="node-title">${escapeHTML(clip(hostName(h)))}</text><text x="16" y="76" class="node-address">${escapeHTML(h.address||"No IP reported")}</text><text x="16" y="99" class="node-detail">${escapeHTML(clip(h.role || deviceModel(h)))}</text><text x="16" y="116" class="node-detail">${escapeHTML(h.role ? clip(deviceModel(h)) : 'Role unverified')}</text></g>`;}).join('');
   $('canvas').innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${panX} ${panY} ${width/zoom} ${height/zoom}" aria-label="${escapeHTML(currentSite().label)} device map">${wires}${cards}${hosts.length?'':'<text x="65" y="110" class="node-title">No observations yet.</text><text x="65" y="142" class="node-detail">Review a scan or import an existing discovery result to populate this canvas.</text>'}</svg>`;
   $('canvas').querySelectorAll('[data-device-index]').forEach(node => {
     const open=() => editDevice(hosts[Number(node.dataset.deviceIndex)]);
@@ -84,10 +91,10 @@ function renderTables() {
   const hosts=currentHosts().filter(h=>[hostName(h),h.address,deviceModel(h),h.role,h.notes].some(v=>String(v||'').toLowerCase().includes(query)));
   $('devices-panel').innerHTML=hosts.length?`<table><thead><tr><th>Device</th><th>Address</th><th>Role / hardware</th><th>Last observed (UTC)</th><th></th></tr></thead><tbody>${hosts.map((h,i)=>`<tr><td>${escapeHTML(hostName(h))}<small>${escapeHTML(h.source)}</small></td><td class="address">${escapeHTML(h.address)}<small>${escapeHTML(h.mac||'MAC not reported')}</small></td><td>${escapeHTML(h.role||'Unverified')}<small>${escapeHTML(deviceModel(h))}</small></td><td>${escapeHTML(h.last_seen.slice(0,16).replace('T',' '))}</td><td><button class="secondary" data-edit-index="${i}">Edit</button></td></tr>`).join('')}</tbody></table>`:'<p class="empty-table">No matching devices. Import results or review a discovery scan.</p>';
   $('devices-panel').querySelectorAll('[data-edit-index]').forEach(b=>b.addEventListener('click',()=>editDevice(hosts[Number(b.dataset.editIndex)])));
-  const links=state.links.filter(l=>l.site===selected);
-  $('connections-panel').innerHTML=links.length?`<table><thead><tr><th>From</th><th>To</th><th>Relationship</th><th>Evidence</th><th>Last recorded (UTC)</th></tr></thead><tbody>${links.map(l=>`<tr><td>${escapeHTML(l.src)}<small>${escapeHTML(l.src_port)}</small></td><td>${escapeHTML(l.dst)}<small>${escapeHTML(l.dst_port)}</small></td><td>${escapeHTML(l.kind)}<small>${escapeHTML(l.label)}</small></td><td>${escapeHTML(l.source==='manual'?'User confirmed':'RouterOS report — review')}</td><td>${escapeHTML(l.observed.slice(0,16).replace('T',' '))}</td></tr>`).join('')}</tbody></table>`:'<p class="empty-table">No connection evidence yet. Import RouterOS neighbors or add a connection you have verified.</p>';
+  const links=currentLinks();
+  $('connections-panel').innerHTML=links.length?`<table><thead><tr><th>From</th><th>To</th><th>Relationship</th><th>Evidence</th><th>Last recorded (UTC)</th></tr></thead><tbody>${links.map(l=>`<tr><td>${escapeHTML(labelFor(l.src))}<small>${escapeHTML(l.src_port)}</small></td><td>${escapeHTML(labelFor(l.dst))}<small>${escapeHTML(l.dst_port)}</small></td><td>${escapeHTML(l.kind)}<small>${escapeHTML(l.label)}</small></td><td>${escapeHTML(l.source==='manual'?'User confirmed':l.source+' report')}</td><td>${escapeHTML(l.observed.slice(0,16).replace('T',' '))}</td></tr>`).join('')}</tbody></table>`:'<p class="empty-table">No connection evidence yet. Import RouterOS neighbors or add a connection you have verified.</p>';
   const jobs=state.jobs.filter(j=>j.site===selected),runs=state.runs.filter(r=>r.site===selected);
-  $('history-panel').innerHTML=jobs.length||runs.length?`<table><thead><tr><th>When (UTC)</th><th>Source</th><th>Result</th></tr></thead><tbody>${jobs.map(j=>`<tr><td>${escapeHTML(j.started.slice(0,16).replace('T',' '))}</td><td>Discovery scan</td><td>${escapeHTML(j.status)}<small>${escapeHTML(j.message)}</small></td></tr>`).join('')}${runs.map(r=>`<tr><td>${escapeHTML(r.observed.slice(0,16).replace('T',' '))}</td><td>${escapeHTML(r.source)}</td><td>${r.hosts} observed addresses imported</td></tr>`).join('')}</tbody></table>`:'<p class="empty-table">Scans and imports will appear here.</p>';
+  $('history-panel').innerHTML=jobs.length||runs.length?`<table><thead><tr><th>When (UTC)</th><th>Source</th><th>Result</th></tr></thead><tbody>${jobs.map(j=>`<tr><td>${escapeHTML(j.started.slice(0,16).replace('T',' '))}</td><td>Discovery scan</td><td>${escapeHTML(j.status)}<small>${escapeHTML(j.message)}</small></td></tr>`).join('')}${runs.map(r=>`<tr><td>${escapeHTML(r.observed.slice(0,16).replace('T',' '))}</td><td>${escapeHTML(r.source)}</td><td>${r.hosts} observations imported</td></tr>`).join('')}</tbody></table>`:'<p class="empty-table">Scans and imports will appear here.</p>';
 }
 function editSite(site=null) {
   const form=$('site-form');form.reset();
@@ -98,7 +105,7 @@ function editSite(site=null) {
 function editDevice(host) {
   const form=$('device-form');form.reset();
   for(const key of ['site','address','name','role','notes'])form.elements[key].value=host[key]||'';
-  form.elements.model.value=host.manual_model||'';$('device-address').textContent=host.address;openDialog('device-dialog');
+  form.elements.asset_id.value=host.id||'';form.elements.model.value=host.manual_model||'';$('asset-details').textContent=JSON.stringify({addresses:host.addresses||[host.address],macs:host.macs||[host.mac],serial:host.serial||'',review:host.review||'',details:host.details||{}},null,2);$('device-address').textContent=host.address;openDialog('device-dialog');
 }
 function busyForm(id, handler) {
   $(id).addEventListener('submit',async event=>{
@@ -115,12 +122,12 @@ $('site-form').elements.label.addEventListener('input',event=>{const id=$('site-
 busyForm('site-form',async form=>{const p=formData(form);p.targets=p.targets.split(/[\s,]+/).filter(Boolean);p.allow_public=form.elements.allow_public.checked;await api('sites',p);selected=p.id;notice('Site saved. Review its scope before scanning.');});
 busyForm('device-form',async form=>{await api('annotate',formData(form));notice('Device details saved.');});
 $('scan').addEventListener('click',async()=>{
-  try{currentPlan=await api('plan',{site:selected});$('plan-summary').textContent=`${currentSite().label}: ${currentPlan.addresses.toLocaleString()} addresses in the following scope.`;$('plan-targets').textContent=currentPlan.targets.join('\n');$('plan-command').textContent=currentPlan.commands.map(c=>c.join(' ')).join('\n');$('start-scan').disabled=false;openDialog('scan-dialog');}
+  try{$('plan-heading').textContent='Review discovery scan';$('start-scan').textContent='Start discovery';$('scan-explanation').textContent='Host discovery only. DNS lookup, service scanning, OS detection and scripts are disabled. Unprivileged TCP probes can miss filtered devices.';currentPlan=await api('plan',{site:selected});$('plan-summary').textContent=`${currentSite().label}: ${currentPlan.addresses.toLocaleString()} addresses in the following scope.`;$('plan-targets').textContent=currentPlan.targets.join('\n');$('plan-command').textContent=currentPlan.commands.map(c=>c.join(' ')).join('\n');$('start-scan').disabled=false;openDialog('scan-dialog');}
   catch(e){notice(e.message,true);}
 });
 $('start-scan').addEventListener('click',async()=>{
   $('start-scan').disabled=true;
-  try{await api('scan',{plan_id:currentPlan.id,confirmed:true});$('scan-dialog').close();notice('Discovery started. Follow progress in History; no device settings will be changed.');await refresh();}
+  try{await api('scan',{plan_id:currentPlan.id,confirmed:true});$('scan-dialog').close();notice('Collection started. Follow progress in History; no device settings will be changed.');await refresh();}
   catch(e){$('scan-dialog').querySelector('.form-error').textContent=e.message;}
   finally{$('start-scan').disabled=false;}
 });
@@ -130,9 +137,9 @@ busyForm('import-form',async form=>{
   const file=form.elements.file.files[0], pasted=form.elements.contents.value.trim();if(!file&&!pasted)throw new Error('Choose a result file or paste its contents.');if(file&&pasted)throw new Error('Choose a file or pasted data, not both.');if(file&&file.size>3*1024*1024)throw new Error('Choose a result file smaller than 3 MiB.');
   const result=await api('import',{site:selected,format:form.elements.format.value,observer:form.elements.observer.value,contents:file?await file.text():pasted});notice(`Imported ${result.hosts} observed addresses. Your corrections were preserved.`);
 });
-$('add-link').addEventListener('click',()=>{const form=$('link-form');form.reset();const options=currentHosts().map(h=>`<option value="${escapeHTML(h.address)}">${escapeHTML(hostName(h)+' ('+h.address+')')}</option>`).join('');form.elements.src.innerHTML=options;form.elements.dst.innerHTML=options;form.elements.dst.selectedIndex=1;openDialog('link-dialog');});
+$('add-link').addEventListener('click',()=>{const form=$('link-form');form.reset();const options=currentHosts().map(h=>`<option value="${escapeHTML(assetKey(h))}">${escapeHTML(hostName(h)+' ('+h.address+')')}</option>`).join('');form.elements.src.innerHTML=options;form.elements.dst.innerHTML=options;form.elements.dst.selectedIndex=1;openDialog('link-dialog');});
 busyForm('link-form',async form=>{await api('link',{...formData(form),site:selected});notice('Confirmed connection saved.');});
-$('search').addEventListener('input',renderTables);
+$('search').addEventListener('input',renderTables);$('show-components').addEventListener('change',render);
 const tabs=['devices','connections','history'];
 function selectTab(name){for(const tab of tabs){const active=tab===name;$(tab+'-tab').setAttribute('aria-selected',String(active));$(tab+'-tab').tabIndex=active?0:-1;$(tab+'-panel').classList.toggle('hidden',!active);}}
 for(const [index,name] of tabs.entries()){$(name+'-tab').addEventListener('click',()=>selectTab(name));$(name+'-tab').addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();const next=e.key==='Home'?0:e.key==='End'?2:(index+(e.key==='ArrowRight'?1:2))%3;selectTab(tabs[next]);$(tabs[next]+'-tab').focus();});}
@@ -154,3 +161,50 @@ for(const name of ['pointerup','pointercancel'])$('canvas').addEventListener(nam
 window.matchMedia('(max-width:720px)').addEventListener('change',()=>{if(currentSite()){zoom=1;panX=0;panY=0;renderCanvas();}});
 selectTab('devices');refresh();
 setInterval(()=>{if(state.jobs.some(j=>j.status==='running')&&!document.querySelector('dialog[open]'))refresh();},2000);
+
+function renderSources(){
+  const sources=(state.collectors||[]).filter(c=>c.site===selected);
+  $('source-list').innerHTML=sources.length?sources.map(c=>`<div class="source-card"><div class="source-title"><strong>${escapeHTML(c.label)}</strong><button class="secondary" data-source-id="${escapeHTML(c.id)}">Edit</button></div><p>${escapeHTML(state.collector_catalog?.[c.kind]?.transport||c.kind)} / ${escapeHTML(c.enabled?'Enabled':'Disabled')}</p><p class="muted">${escapeHTML(c.config.endpoint||'Discover agents across the saved site scope')}</p><p class="muted">${escapeHTML(c.credential_status)}</p>${c.last_result?`<p>${escapeHTML(c.last_result)}</p>`:''}</div>`).join(''):'<p class="empty-table">Add a router, hypervisor, storage system, iDRAC, or a shared SNMP profile. The collector will identify its assets automatically.</p>';
+  $('source-list').querySelectorAll('[data-source-id]').forEach(button=>button.addEventListener('click',()=>editSource(sources.find(c=>c.id===button.dataset.sourceId))));
+}
+function sourceFields(){
+  const form=$('source-form'),kind=form.elements.kind.value,snmp=['snmp','apc','cyberpower'].includes(kind),v3=form.elements.snmp_version.value==='3';
+  $('snmp-fields').classList.toggle('hidden',!snmp);$('api-credential-fields').classList.toggle('hidden',snmp);
+  $('v3-fields').classList.toggle('hidden',!v3);$('community-field').classList.toggle('hidden',v3);
+  $('username-field').classList.toggle('hidden',snmp&&!v3);
+  $('username-label').textContent=snmp?'SNMPv3 security name':kind==='proxmox'?'Proxmox user@realm!tokenid':kind==='truenas'?'TrueNAS API-key username':'Username';
+  $('endpoint-label').textContent=snmp?'Management IP (blank for a shared SNMP discovery profile)':'Management URL';
+  form.elements.endpoint.placeholder=snmp?'10.20.0.1, or leave blank for discovery':'https://device.example'+(kind==='proxmox'?':8006':'');
+  $('endpoint-help').textContent=snmp?'An auto-detect profile can discover all responding SNMP agents in the saved scope with one shared credential.':'Endpoint resolution is restricted to the saved site scope. TLS verification or an explicit certificate pin is required.';
+  form.elements.save_keychain.disabled=!state.keychain_available;
+}
+function editSource(source=null){
+  $('sources-dialog').close();const form=$('source-form');form.reset();
+  form.elements.id.value=source?.id||'';form.elements.kind.value=source?.kind||'routeros';form.elements.label.value=source?.label||'';
+  for(const key of ['endpoint','username','fingerprint','snmp_version','security_level','auth_protocol','privacy_protocol','snmp_port'])if(source?.config?.[key]!==undefined)form.elements[key].value=source.config[key];
+  form.elements.enabled.checked=source?.enabled??true;form.elements.save_keychain.checked=source?.secret_mode==='keychain';
+  $('source-title').textContent=source?'Edit collector':'Add collector';sourceFields();openDialog('source-dialog');
+}
+$('manage-collectors').addEventListener('click',()=>{renderSources();openDialog('sources-dialog');});
+$('add-source').addEventListener('click',()=>editSource());
+for(const name of ['kind','snmp_version','security_level'])$('source-form').elements[name].addEventListener('change',sourceFields);
+busyForm('source-form',async form=>{
+  const config={},credentials={};
+  for(const key of ['endpoint','username','fingerprint','snmp_version','security_level','auth_protocol','privacy_protocol','snmp_port'])config[key]=form.elements[key].value;
+  for(const key of ['password','community','auth_password','privacy_password'])credentials[key]=form.elements[key].value;
+  await api('collectors/save',{id:form.elements.id.value||undefined,site:selected,kind:form.elements.kind.value,label:form.elements.label.value,enabled:form.elements.enabled.checked,save_keychain:form.elements.save_keychain.checked,config,credentials});
+  for(const key of ['password','community','auth_password','privacy_password'])form.elements[key].value='';
+  notice('Collector saved. Review collection to discover and enrich its assets.');
+});
+$('collect-inventory').addEventListener('click',async()=>{
+  const button=$('collect-inventory');button.disabled=true;
+  try{
+    currentPlan=await api('collectors/plan',{site:selected});
+    $('plan-heading').textContent='Review direct collection';$('start-scan').textContent='Start collection';
+    $('plan-summary').textContent=`${currentSite().label}: ${currentPlan.addresses.toLocaleString()} management targets across ${currentPlan.connections.length} collectors.`;
+    $('plan-targets').textContent=currentPlan.summaries.join('\n')+'\n\nSite scope:\n'+currentPlan.targets.join('\n');
+    $('scan-explanation').textContent='Read-only management queries. APIs and SNMP identify devices, hardware and reported relationships automatically. No service is enabled or reconfigured, and power connections are not guessed.';
+    $('plan-command').textContent=currentPlan.connections.map(c=>`${(state.collectors||[]).find(s=>s.id===c.id)?.label||c.id}\n${c.addresses.join(', ')}`).join('\n\n');
+    $('start-scan').disabled=false;openDialog('scan-dialog');
+  }catch(error){notice(error.message,true);}finally{button.disabled=false;}
+});
