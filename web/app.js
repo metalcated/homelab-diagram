@@ -5,7 +5,7 @@ const token = document.querySelector('meta[name="labmap-token"]').content;
 let state = {sites:[],hosts:[],links:[],jobs:[],runs:[]}, selected = null, currentPlan = null, zoom = 1, panX = 0, panY = 0;
 let refreshPending = null, collectionReview = 0;
 let activeTab='devices', outputJob=null, outputCursor=0, outputGeneration=0, outputBusy=false, outputFinished=false;
-let outputAbort=null;
+let outputAbort=null, tokenPasteWasUuid=false;
 
 async function api(path, body) {
   const response = await fetch('/api/' + path, body === undefined ? {cache:'no-store'} : {
@@ -260,23 +260,35 @@ function sourceFields(){
   if(kind==='proxmox')$('endpoint-help').textContent+=' This connection uses an API token; normal user sign-in is not supported.';
   form.elements.save_keychain.disabled=!state.keychain_available;
 }
+function isTokenUuid(value){return /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(value);}
+function tokenEntryStatus(){
+  const value=$('source-secret').value,proxmox=$('source-form').elements.kind.value==='proxmox';
+  $('token-entry-status').textContent=!proxmox||!value?'':isTokenUuid(value)?'Token UUID format recognized.':'This field does not currently contain a token UUID. Check autofill.';
+}
+$('source-secret').addEventListener('paste',event=>{tokenPasteWasUuid=isTokenUuid((event.clipboardData?.getData('text')||'').trim());});
+$('source-secret').addEventListener('input',tokenEntryStatus);
 function editSource(source=null){
   $('sources-dialog').close();const form=$('source-form');form.reset();
   form.elements.id.value=source?.id||'';form.elements.kind.value=source?.kind||'routeros';form.elements.label.value=source?.label||'';
   for(const key of ['endpoint','username','fingerprint','snmp_version','security_level','auth_protocol','privacy_protocol','snmp_port'])if(source?.config?.[key]!==undefined)form.elements[key].value=source.config[key];
   form.elements.enabled.checked=source?.enabled??true;form.elements.save_keychain.checked=source?.secret_mode==='keychain';
-  $('source-title').textContent=source?'Edit collector':'Add collector';sourceFields();openDialog('source-dialog');
+  tokenPasteWasUuid=false;
+  $('source-title').textContent=source?'Edit collector':'Add collector';sourceFields();tokenEntryStatus();openDialog('source-dialog');
 }
 $('manage-collectors').addEventListener('click',()=>{renderSources();openDialog('sources-dialog');});
 $('add-source').addEventListener('click',()=>editSource());
-for(const name of ['kind','snmp_version','security_level'])$('source-form').elements[name].addEventListener('change',sourceFields);
+for(const name of ['kind','snmp_version','security_level'])$('source-form').elements[name].addEventListener('change',()=>{sourceFields();tokenEntryStatus();});
 busyForm('source-form',async form=>{
   const config={},credentials={};
   for(const key of ['endpoint','username','fingerprint','snmp_version','security_level','auth_protocol','privacy_protocol','snmp_port'])config[key]=form.elements[key].value;
-  for(const key of ['password','community','auth_password','privacy_password'])credentials[key]=form.elements[key].value;
-  await api('collectors/save',{id:form.elements.id.value||undefined,site:selected,kind:form.elements.kind.value,label:form.elements.label.value,enabled:form.elements.enabled.checked,save_keychain:form.elements.save_keychain.checked,config,credentials});
-  for(const key of ['password','community','auth_password','privacy_password'])form.elements[key].value='';
-  notice('Collector saved. Review collection to discover and enrich its assets.');
+  credentials.password=form.elements.collector_secret.value;
+  for(const key of ['community','auth_password','privacy_password'])credentials[key]=form.elements[key].value;
+  if(form.elements.kind.value==='proxmox'&&credentials.password&&!isTokenUuid(credentials.password))throw new Error(tokenPasteWasUuid?'The token field changed after a UUID was pasted. Check autofill, paste the token again and save.':'API token secret must contain only the token UUID. Check autofill and paste the token value.');
+  const result=await api('collectors/save',{id:form.elements.id.value||undefined,site:selected,kind:form.elements.kind.value,label:form.elements.label.value,enabled:form.elements.enabled.checked,save_keychain:form.elements.save_keychain.checked,config,credentials});
+  form.elements.collector_secret.value='';
+  for(const key of ['community','auth_password','privacy_password'])form.elements[key].value='';
+  tokenPasteWasUuid=false;
+  notice(result.credential_storage_checked?'Collector saved. Keychain read-back matches your entry. Review collection to discover its assets.':result.credential_updated?'Collector saved with the entered credential for this session. Review collection to discover its assets.':'Collector settings saved. The existing credential was retained.');
 });
 $('scan-dialog').addEventListener('close',()=>{collectionReview++;currentPlan=null;});
 async function updateCollectionPlan(){

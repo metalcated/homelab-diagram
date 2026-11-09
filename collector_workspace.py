@@ -11,7 +11,7 @@ import threading
 import asset_inventory
 from collector_secrets import Vault
 from collector_transport import CollectorError
-from direct_collectors import ADAPTERS, CATALOG, connection_targets, validate_config
+from direct_collectors import ADAPTERS, CATALOG, connection_targets, validate_config, proxmox_token_secret
 from scan_events import Events, Redactor
 
 
@@ -46,7 +46,12 @@ class CollectorManager:
             old=db.execute('SELECT * FROM collector_connections WHERE id=?',(key,)).fetchone()
         if old and old['site']!=site:raise ValueError('Collector belongs to another site.')
         if not isinstance(payload.get('enabled',True),bool):raise ValueError('Enabled must be true or false.')
-        secret_values=payload.get('credentials') or {}
+        supplied=payload.get('credentials') or {}
+        if not isinstance(supplied,dict):raise ValueError('Invalid collector credential fields.')
+        allowed={'password'} if CATALOG[kind]['auth']!='snmp' else {'community','auth_password','privacy_password'}
+        secret_values={k:v for k,v in supplied.items() if k in allowed}
+        entered=any(secret_values.values())
+        if kind=='proxmox' and secret_values.get('password'):proxmox_token_secret(secret_values['password'])
         changed_account=bool(old and (old['kind']!=kind or json.loads(old['config']).get('username')!=config.get('username')))
         if changed_account and not any(secret_values.values()):
             raise ValueError('Re-enter credentials when changing the collector type or account.')
@@ -61,7 +66,7 @@ class CollectorManager:
               VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET label=excluded.label,kind=excluded.kind,
               config=excluded.config,secret_mode=excluded.secret_mode,enabled=excluded.enabled,revision=excluded.revision''',
               (key,site,asset_inventory.text(payload.get('label')) or CATALOG[kind]['name'],kind,json.dumps(config),mode,int(payload.get('enabled',True)),secrets.token_hex(12)))
-        return {'saved':True,'id':key}
+        return {'saved':True,'id':key,'credential_updated':bool(entered),'credential_storage_checked':bool(entered and mode=='keychain')}
 
     def credential(self,connection):
         cfg=connection['config']
@@ -69,6 +74,7 @@ class CollectorManager:
         snmp=CATALOG[connection['kind']]['auth']=='snmp'
         if snmp and cfg['snmp_version']=='3' and cfg['security_level']=='noAuthNoPriv':return {}
         value=self.vault.get(connection['id'],connection['secret_mode'])
+        if connection['kind']=='proxmox':proxmox_token_secret(value.get('password',''))
         if not snmp and not value.get('password'):raise ValueError('Enter the password or API token secret for this collector.')
         if snmp and cfg['snmp_version']=='2c' and not value.get('community'):raise ValueError('Enter the read-only SNMP community.')
         if snmp and cfg['snmp_version']=='3':

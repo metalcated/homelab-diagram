@@ -71,10 +71,13 @@ class Vault:
             raise ValueError('Invalid collector credential fields.')
         values={k:v for k,v in values.items() if k in ('password','community','auth_password','privacy_password') and v}
         if not values:return None
-        if persistent:
-            if self.keychain is None:raise ValueError('macOS Keychain is unavailable. Choose session-only storage.')
-            self.keychain.operation(key,values)
-        with self.lock:self.memory[key]=values
+        with self.lock:
+            if persistent:
+                if self.keychain is None:raise ValueError('macOS Keychain is unavailable. Choose session-only storage.')
+                self.keychain.operation(key,values)
+                if self.keychain.operation(key)!=values:
+                    raise ValueError('Keychain read-back did not match the credential submitted. Save was not confirmed; re-enter it or choose session-only storage.')
+            self.memory[key]=dict(values)
         return 'keychain' if persistent else 'session'
 
     def get(self,key,mode):

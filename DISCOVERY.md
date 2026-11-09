@@ -176,6 +176,14 @@ supports noAuthNoPriv, authNoPriv, and authPriv with the SHA/MD5 and AES/DES
 protocols supported by the installed Net-SNMP client; choose SHA/AES where the
 agent supports it. SNMPv2c communities are not encrypted on the wire.
 
+The Proxmox secret field checks the token's UUID format before saving or starting
+a collection. It reports format recognition without displaying the value. If a
+password manager replaces the entry, correct the field before saving. An empty
+field when editing retains the existing credential; the save notice states when
+this happens. Saving a newly entered credential to Keychain reads it back and
+compares it in memory before reporting success. That verifies storage only;
+Proxmox authentication and inventory access are checked during collection.
+
 Credentials stay in memory for the app session unless **Save entered credentials
 in macOS Keychain** is explicitly selected. Keychain storage uses native Security
 framework calls; secrets are not passed to the `security` command. SQLite stores

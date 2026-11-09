@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 from urllib.parse import quote, urlencode
 
 from asset_inventory import mac, text
@@ -31,6 +32,13 @@ def proxmox_token_id(value):
     value=str(value or '').strip()
     if not re.fullmatch(r'[^\s!=]+@[^\s!=]+![^\s!=]+',value):
         raise CollectorError('Proxmox requires the full API token ID: user@realm!tokenid. Enter only the ID here and the token value in API token secret; a user account alone cannot authenticate this collector.')
+    return value
+
+
+def proxmox_token_secret(value):
+    try:uuid.UUID(value)
+    except (ValueError,TypeError,AttributeError):
+        raise CollectorError('API token secret must contain the UUID value issued for this Proxmox token. Check that autofill has not replaced it; paste only the token value.') from None
     return value
 
 
@@ -147,6 +155,7 @@ def routeros(config,secret,address,nets,stop=lambda:False,client=None,emit=None)
 def proxmox(config,secret,address,nets,stop=lambda:False,client=None,emit=None):
     token=secret.get('password','')
     if not token:raise CollectorError('Enter the Proxmox API token secret.')
+    proxmox_token_secret(token)
     user=proxmox_token_id(config['username'])
     http=client or HTTPS(config,address,{'Authorization':f'PVEAPIToken={user}={token}'},stop,emit=emit)
     b=Batch(nets)
