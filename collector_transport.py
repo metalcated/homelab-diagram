@@ -107,8 +107,10 @@ class HTTPS:
             conn.request('GET',path,headers={**self.headers,'Accept':'application/json'})
             response=conn.getresponse()
             body=response.read(MAX_RESPONSE+1)
-            if response.status in (401,403):
-                raise CollectorError("Authentication or read permission was denied.",response.status)
+            if response.status==401:
+                raise CollectorError(f'Authentication rejected (HTTP 401) at {resource}. Check the required account/token format and credential.',401)
+            if response.status==403:
+                raise CollectorError(f'Read access denied (HTTP 403) at {resource}. Check the account and token permissions for this request.',403)
             if response.status!=200:
                 raise CollectorError(f"Management GET returned HTTP {response.status}; redirects are not followed.",response.status)
             if len(body)>MAX_RESPONSE:

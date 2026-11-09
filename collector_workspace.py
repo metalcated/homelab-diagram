@@ -65,6 +65,7 @@ class CollectorManager:
 
     def credential(self,connection):
         cfg=connection['config']
+        if connection['kind']=='proxmox':validate_config('proxmox',cfg)
         snmp=CATALOG[connection['kind']]['auth']=='snmp'
         if snmp and cfg['snmp_version']=='3' and cfg['security_level']=='noAuthNoPriv':return {}
         value=self.vault.get(connection['id'],connection['secret_mode'])
@@ -177,7 +178,8 @@ class CollectorManager:
             if not successes or errors or source_warnings:
                 issues.append(redactor.text(connection['label'])+': '+(source_warnings[0] if source_warnings else 'No inventory was returned.'))
             summary=f'{successes} responding targets; {errors} failed targets. '+(' / '.join(dict.fromkeys(source_warnings))[:1000] if source_warnings else '')
-            if not successes and not errors:summary+='No SNMP agents responded. Verify the profile, scope, UDP/161 reachability and read permissions.'
+            if not successes and not errors:
+                summary+='No SNMP agents responded. Verify the profile, scope, UDP/161 reachability and read permissions.' if CATALOG[connection['kind']]['auth']=='snmp' else 'No inventory was visible to this connection. Check its account and API token read permissions.'
             with closing(self.store.connect()) as db,db:
                 db.execute('UPDATE collector_connections SET last_collected=?,last_result=? WHERE id=?',(now(),redactor.text(summary,1500),connection['id']))
             emit('warning' if errors or source_warnings or not successes else 'info','Collector finished. '+summary)

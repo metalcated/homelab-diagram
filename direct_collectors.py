@@ -27,6 +27,13 @@ CATALOG={
 }
 
 
+def proxmox_token_id(value):
+    value=str(value or '').strip()
+    if not re.fullmatch(r'[^\s!=]+@[^\s!=]+![^\s!=]+',value):
+        raise CollectorError('Proxmox requires the full API token ID: user@realm!tokenid. Enter only the ID here and the token value in API token secret; a user account alone cannot authenticate this collector.')
+    return value
+
+
 def validate_config(kind,payload):
     if kind not in CATALOG:raise CollectorError('Choose a supported collector.')
     cfg={'endpoint':str(payload.get('endpoint') or '').strip(), 'username':text(payload.get('username'),200),
@@ -50,6 +57,7 @@ def validate_config(kind,payload):
     else:
         endpoint(cfg['endpoint'])
         if not cfg['username']:raise CollectorError('Enter the management username, API-key username, or Proxmox user@realm!tokenid.')
+        if kind=='proxmox':cfg['username']=proxmox_token_id(cfg['username'])
     return cfg
 
 
@@ -139,14 +147,16 @@ def routeros(config,secret,address,nets,stop=lambda:False,client=None,emit=None)
 def proxmox(config,secret,address,nets,stop=lambda:False,client=None,emit=None):
     token=secret.get('password','')
     if not token:raise CollectorError('Enter the Proxmox API token secret.')
-    http=client or HTTPS(config,address,{'Authorization':f'PVEAPIToken={config["username"]}={token}'},stop,emit=emit)
+    user=proxmox_token_id(config['username'])
+    http=client or HTTPS(config,address,{'Authorization':f'PVEAPIToken={user}={token}'},stop,emit=emit)
     b=Batch(nets)
     def get(path,optional=False,default=None):
         payload=b.optional(http,'/api2/json'+path,{'data':default}) if optional else http.get('/api2/json'+path)
-        if not isinstance(payload,dict) or 'data' not in payload:raise CollectorError('Unexpected Proxmox API response.')
+        if not isinstance(payload,dict) or 'data' not in payload:raise CollectorError('Unexpected Proxmox API response at /api2/json'+path+'.')
         return payload['data']
     resources=get('/cluster/resources')
     if not isinstance(resources,list):raise CollectorError('Proxmox did not return a resource list.')
+    if not resources:raise CollectorError('Proxmox /api2/json/cluster/resources returned no visible inventory. Check the token and its user have propagated read access to the cluster.')
     status=get('/cluster/status',True,[])
     cluster=next((text(r.get('name')) for r in status if r.get('type')=='cluster'),'')
     prefix='pve:'+str(config.get('id') or address)+':'

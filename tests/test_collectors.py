@@ -20,6 +20,7 @@ import test_labmap as base_tests
 NETS=[ipaddress.ip_network('10.20.0.0/24')]
 SECRET={'password':'example-test-secret'}
 CFG={'endpoint':'https://10.20.0.1','username':'readonly','id':'example','kind':'routeros'}
+PVE_CFG={**CFG,'username':'readonly@pve!inventory','kind':'proxmox'}
 
 
 class FakeHTTP:
@@ -59,6 +60,16 @@ def redfish_fixture():
 
 
 class AdapterTests(unittest.TestCase):
+    def test_proxmox_requires_the_full_token_id_without_persisting_a_header_or_token_value(self):
+        for value in ('readonly','root@pam','root@pam!','root@pam!token=value','PVEAPIToken=root@pam!token','root@pam!token\nextra'):
+            with self.subTest(value=value),self.assertRaisesRegex(transport.CollectorError,'user@realm!tokenid'):
+                dc.validate_config('proxmox',{**CFG,'username':value})
+        self.assertEqual(dc.validate_config('proxmox',PVE_CFG)['username'],PVE_CFG['username'])
+
+    def test_proxmox_empty_visibility_explains_token_and_user_permissions(self):
+        with self.assertRaisesRegex(transport.CollectorError,'no visible inventory'):
+            dc.proxmox(PVE_CFG,SECRET,'10.20.0.10',NETS,client=FakeHTTP({'/api2/json/cluster/resources':{'data':[]}}))
+
     def test_routeros_singleton_objects_and_optional_bad_table_keep_collected_inventory(self):
         http=FakeHTTP({'/rest/system/identity':{'name':'real-format-router'},'/rest/system/resource':{'board-name':'Example router','version':'7.x'},'/rest/interface':[{'name':'ether1'}],'/rest/ip/neighbor':{'unexpected':'not-a-table'}})
         result=dc.routeros(CFG,SECRET,'10.20.0.1',NETS,client=http)
@@ -87,7 +98,7 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn('wireguard',str(http.paths))
 
     def test_proxmox_automatically_assigns_hosts_guests_and_storage_without_ips(self):
-        result=dc.proxmox(CFG,SECRET,'10.20.0.10',NETS,client=pve_fixture())
+        result=dc.proxmox(PVE_CFG,SECRET,'10.20.0.10',NETS,client=pve_fixture())
         vm=next(a for a in result['assets'] if a.get('name')=='vm-no-ip')
         self.assertEqual(vm['role'],'VM')
         self.assertEqual(vm['addresses'],[])
@@ -97,7 +108,7 @@ class AdapterTests(unittest.TestCase):
 
     def test_proxmox_permission_failure_is_partial_and_preserves_visible_guests(self):
         http=pve_fixture();http.responses['/api2/json/nodes/pve-a/qemu/100/config']=transport.CollectorError('Denied',403)
-        result=dc.proxmox(CFG,SECRET,'10.20.0.10',NETS,client=http)
+        result=dc.proxmox(PVE_CFG,SECRET,'10.20.0.10',NETS,client=http)
         self.assertTrue(result['warnings'])
         self.assertTrue(any(a.get('name')=='vm-no-ip' for a in result['assets']))
 
@@ -169,7 +180,7 @@ class AdapterTests(unittest.TestCase):
     def test_single_cluster_connection_discovers_fifty_guests(self):
         http=pve_fixture()
         http.responses['/api2/json/cluster/resources']['data']=[{'type':'node','node':'pve-a'}]+[{'type':'qemu','node':'pve-a','vmid':i,'name':'guest-'+str(i)} for i in range(100,150)]
-        result=dc.proxmox(CFG,SECRET,'10.20.0.10',NETS,client=http)
+        result=dc.proxmox(PVE_CFG,SECRET,'10.20.0.10',NETS,client=http)
         self.assertEqual(len([a for a in result['assets'] if a.get('role')=='VM']),50)
         self.assertEqual(len([l for l in result['links'] if l['kind']=='hosts']),50)
 
@@ -185,7 +196,7 @@ class InventoryTests(unittest.TestCase):
     def test_enrich_existing_address_and_preserve_user_corrections(self):
         self.store.ingest('home','nmap',[{'address':'10.20.0.10','network':'10.20.0.0/24','hostname':'old','mac':'00:11:22:33:44:10','vendor':'Dell','model':''}],[],labmap.now())
         self.store.annotate({'site':'home','address':'10.20.0.10','name':'Keep this name','role':'My role'})
-        self.ingest('proxmox',dc.proxmox(CFG,SECRET,'10.20.0.10',NETS,client=pve_fixture()))
+        self.ingest('proxmox',dc.proxmox(PVE_CFG,SECRET,'10.20.0.10',NETS,client=pve_fixture()))
         self.ingest('idrac',dc.idrac(CFG,SECRET,'10.20.0.11',NETS,client=redfish_fixture()))
         assets=self.store.state()['assets']
         physical=next(a for a in assets if '10.20.0.10' in a['addresses'])
@@ -209,7 +220,7 @@ class InventoryTests(unittest.TestCase):
         self.assertTrue(any(a['review'] for a in self.store.state()['assets']))
 
     def test_guest_with_no_ip_has_stable_identity_and_host_relationship(self):
-        for _ in range(2):self.ingest('proxmox',dc.proxmox(CFG,SECRET,'10.20.0.10',NETS,client=pve_fixture()))
+        for _ in range(2):self.ingest('proxmox',dc.proxmox(PVE_CFG,SECRET,'10.20.0.10',NETS,client=pve_fixture()))
         state=self.store.state();vms=[a for a in state['assets'] if a['role']=='VM']
         self.assertEqual(len(vms),1);self.assertEqual(vms[0]['addresses'],[])
         self.assertTrue(any(l['kind']=='hosts' and l['dst']==vms[0]['id'] for l in state['asset_links']))
@@ -233,6 +244,15 @@ class InventoryTests(unittest.TestCase):
 class ManagerTests(unittest.TestCase):
     setUp=InventoryTests.setUp
 
+    def test_legacy_proxmox_user_account_is_rejected_before_keychain_or_network_access(self):
+        app=labmap.Workspace(self.store)
+        saved=app.collectors.save({'site':'home','kind':'proxmox','config':PVE_CFG,'credentials':SECRET})
+        with closing(self.store.connect()) as db,db:
+            db.execute('UPDATE collector_connections SET config=? WHERE id=?',(json.dumps({**PVE_CFG,'username':'root@pam'}),saved['id']))
+        with patch.object(app.collectors.vault,'get') as credential,patch('collector_workspace.connection_targets') as resolve:
+            with self.assertRaisesRegex(ValueError,'user@realm!tokenid'):app.collectors.plan('home')
+            credential.assert_not_called();resolve.assert_not_called()
+
     def test_all_collectors_only_includes_enabled_connections_in_this_site(self):
         app=labmap.Workspace(self.store)
         enabled=[app.collectors.save({'site':'home','kind':'routeros','label':label,'config':CFG,'credentials':SECRET})['id'] for label in ('Core','Edge')]
@@ -245,7 +265,7 @@ class ManagerTests(unittest.TestCase):
     def test_one_collector_does_not_need_credentials_from_unselected_sources(self):
         app=labmap.Workspace(self.store)
         saved=app.collectors.save({'site':'home','kind':'routeros','config':CFG,'credentials':SECRET})['id']
-        app.collectors.save({'site':'home','kind':'proxmox','config':CFG})
+        app.collectors.save({'site':'home','kind':'proxmox','config':PVE_CFG})
         with self.assertRaises(ValueError):app.collectors.plan('home')
         plan=app.collectors.plan('home',[saved])
         self.assertEqual([c['id'] for c in plan['connections']],[saved])
@@ -275,8 +295,8 @@ class ManagerTests(unittest.TestCase):
 
     def test_direct_collection_runs_without_import_or_manual_assignment(self):
         app=labmap.Workspace(self.store)
-        app.collectors.save({'site':'home','kind':'proxmox','config':CFG,'credentials':SECRET})
-        batch=dc.proxmox(CFG,SECRET,'10.20.0.10',NETS,client=pve_fixture())
+        app.collectors.save({'site':'home','kind':'proxmox','config':PVE_CFG,'credentials':SECRET})
+        batch=dc.proxmox(PVE_CFG,SECRET,'10.20.0.10',NETS,client=pve_fixture())
         with patch.dict(dc.ADAPTERS,{'proxmox':Mock(return_value=batch)}):
             plan=app.collectors.plan('home');app.start({'plan_id':plan['id'],'confirmed':True});app.thread.join(timeout=5)
         self.assertEqual(self.store.state()['jobs'][0]['status'],'complete')
@@ -342,7 +362,7 @@ class CollectorHTTPTests(unittest.TestCase):
     def test_webui_apis_save_collect_and_return_automatically_classified_assets(self):
         auth=self.auth()
         self.request('/api/sites',{'id':'home','targets':['10.20.0.0/24']},auth)
-        payload={'site':'home','kind':'proxmox','label':'Cluster','config':CFG,'credentials':SECRET}
+        payload={'site':'home','kind':'proxmox','label':'Cluster','config':PVE_CFG,'credentials':SECRET}
         code,body,_=self.request('/api/collectors/save',payload,auth)
         self.assertEqual(code,200)
         state=json.loads(self.request('/api/state')[1])
@@ -351,7 +371,7 @@ class CollectorHTTPTests(unittest.TestCase):
         code,body,_=self.request('/api/collectors/plan',{'site':'home'},auth)
         self.assertEqual(code,200)
         plan=json.loads(body)
-        batch=dc.proxmox(CFG,SECRET,'10.20.0.10',NETS,client=pve_fixture())
+        batch=dc.proxmox(PVE_CFG,SECRET,'10.20.0.10',NETS,client=pve_fixture())
         with patch.dict(dc.ADAPTERS,{'proxmox':Mock(return_value=batch)}):
             code,_,_=self.request('/api/scan',{'plan_id':plan['id'],'confirmed':True},auth)
             self.assertEqual(code,200);self.app.thread.join(timeout=5)

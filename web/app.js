@@ -251,10 +251,13 @@ function sourceFields(){
   $('snmp-fields').classList.toggle('hidden',!snmp);$('api-credential-fields').classList.toggle('hidden',snmp);
   $('v3-fields').classList.toggle('hidden',!v3);$('community-field').classList.toggle('hidden',v3);
   $('username-field').classList.toggle('hidden',snmp&&!v3);
-  $('username-label').textContent=snmp?'SNMPv3 security name':kind==='proxmox'?'Proxmox user@realm!tokenid':kind==='truenas'?'TrueNAS API-key username':'Username';
+  $('username-label').textContent=snmp?'SNMPv3 security name':kind==='proxmox'?'API token ID (user@realm!tokenid)':kind==='truenas'?'TrueNAS API-key username':'Username';
+  $('api-secret-label').textContent=kind==='proxmox'?'API token secret':kind==='truenas'?'API key':'Password';
+  $('api-secret-help').textContent=kind==='proxmox'?'Enter the token value shown when the API token was created. Leave blank to retain a saved token.':'Leave blank to retain a saved credential when editing.';
   $('endpoint-label').textContent=snmp?'Management IP (blank for a shared SNMP discovery profile)':'Management URL';
   form.elements.endpoint.placeholder=snmp?'10.20.0.1, or leave blank for discovery':'https://device.example'+(kind==='proxmox'?':8006':'');
   $('endpoint-help').textContent=snmp?'An auto-detect profile can discover all responding SNMP agents in the saved scope with one shared credential.':'Endpoint resolution is restricted to the saved site scope. TLS verification or an explicit certificate pin is required.';
+  if(kind==='proxmox')$('endpoint-help').textContent+=' This connection uses an API token; normal user sign-in is not supported.';
   form.elements.save_keychain.disabled=!state.keychain_available;
 }
 function editSource(source=null){
