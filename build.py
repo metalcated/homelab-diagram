@@ -14,6 +14,10 @@ import pathlib
 import subprocess
 import sys
 
+if '--discovered-db' in sys.argv:
+    from discovered_diagram import main as discovered_main
+    raise SystemExit(discovered_main(sys.argv[1:]))
+
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parent

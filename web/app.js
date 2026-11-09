@@ -56,7 +56,7 @@ function render() {
   const site = currentSite();
   $('empty').classList.toggle('hidden', !!site);
   $('workspace').classList.toggle('hidden', !site);
-  for (const id of ['edit-site','import-data','scan','manage-collectors','collect-inventory']) $(id).classList.toggle('hidden', !site);
+  for (const id of ['edit-site','import-data','scan','manage-collectors','collect-inventory','original-diagram']) $(id).classList.toggle('hidden', !site);
   $('breadcrumb').textContent = site ? 'Your workspace / ' + site.label : 'Your workspace';
   $('site-title').textContent = site ? site.label : 'Map your lab, one observation at a time.';
   $('site-subtitle').textContent = site ? site.targets.join(' / ') : 'Add a site and the networks you want to discover.';
@@ -321,3 +321,48 @@ $('collect-inventory').addEventListener('click',()=>{
   $('scan-explanation').textContent='Read-only management queries. APIs and SNMP identify devices, hardware and reported relationships automatically. No service is enabled or reconfigured, and power connections are not guessed.';
   openDialog('scan-dialog');updateCollectionPlan();
 });
+
+let diagramRequest=0, diagramAbort=null, diagramUrl=null, diagramZoom=100;
+function clearDiagram(){
+  diagramRequest++;diagramAbort?.abort();diagramAbort=null;
+  $('diagram-image').removeAttribute('src');$('diagram-image').classList.add('hidden');
+  if(diagramUrl)URL.revokeObjectURL(diagramUrl);diagramUrl=null;
+  for(const id of ['diagram-svg','diagram-png']){$(id).removeAttribute('href');$(id).classList.add('hidden');}
+}
+function zoomDiagram(value){
+  diagramZoom=Math.min(400,Math.max(25,value));$('diagram-image').style.width=diagramZoom+'%';
+  $('diagram-fit').textContent=diagramZoom===100?'Fit width':diagramZoom+'% · Fit';
+  $('diagram-zoom-out').disabled=diagramZoom<=25;$('diagram-zoom-in').disabled=diagramZoom>=400;
+}
+async function loadDiagram(){
+  clearDiagram();const request=diagramRequest,site=selected;
+  const redacted=$('diagram-redacted').checked,params=new URLSearchParams({site,redacted:redacted?'1':'0',v:String(Date.now())});
+  const svg='/api/original-diagram.svg?'+params;
+  diagramAbort=new AbortController();$('diagram-status').textContent='Generating diagram from saved inventory…';
+  $('diagram-dialog').querySelector('.form-error').textContent='';
+  try{
+    const response=await fetch(svg,{cache:'no-store',signal:diagramAbort.signal});
+    if(!response.ok){const result=await response.json();throw new Error(result.error||'The diagram could not be generated.');}
+    const blob=await response.blob();
+    if(request!==diagramRequest||!$('diagram-dialog').open)return;
+    diagramUrl=URL.createObjectURL(blob);$('diagram-image').src=diagramUrl;
+    await $('diagram-image').decode();
+    if(request!==diagramRequest||!$('diagram-dialog').open)return;
+    $('diagram-image').classList.remove('hidden');
+    $('diagram-image').alt=(redacted?'Names and addresses hidden':'Private')+' original-style inventory diagram for '+(redacted?'this site':currentSite().label);
+    const suffix=redacted?'redacted':'private';
+    $('diagram-svg').href=svg;$('diagram-svg').download=site+'-original-style-'+suffix+'.svg';$('diagram-svg').classList.remove('hidden');
+    if(state.png_available){$('diagram-png').href='/api/original-diagram.png?'+params;$('diagram-png').download=site+'-original-style-'+suffix+'.png';$('diagram-png').classList.remove('hidden');}
+    $('diagram-status').textContent=(state.demo||state.simulated?'Simulated inventory. ':'')+(redacted?'Names and addresses hidden. ':'Private inventory snapshot. ')+(state.png_available?'Download SVG for scalable editing or PNG for sharing.':'PNG export is unavailable on this Mac; SVG is ready to download.');
+  }catch(error){
+    if(error.name==='AbortError'||request!==diagramRequest)return;
+    $('diagram-status').textContent='Preview unavailable. Close and reopen to retry.';
+    $('diagram-dialog').querySelector('.form-error').textContent=error.message;
+  }
+}
+$('original-diagram').addEventListener('click',()=>{zoomDiagram(100);openDialog('diagram-dialog');loadDiagram();});
+$('diagram-redacted').addEventListener('change',loadDiagram);
+$('diagram-dialog').addEventListener('close',clearDiagram);
+$('diagram-fit').addEventListener('click',()=>zoomDiagram(100));
+$('diagram-zoom-in').addEventListener('click',()=>zoomDiagram(diagramZoom+25));
+$('diagram-zoom-out').addEventListener('click',()=>zoomDiagram(diagramZoom-25));

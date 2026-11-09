@@ -25,6 +25,7 @@ import asset_inventory
 from collector_workspace import CollectorManager
 from direct_collectors import CATALOG
 from scan_events import Events, quiet, read_events, SCHEMA as EVENT_SCHEMA
+import discovered_diagram
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent
@@ -505,9 +506,9 @@ class Handler(BaseHTTPRequestHandler):
                              and self.headers.get("Content-Type", "").split(";")[0] == "application/json")
 
     def send(self, code, data, content_type="application/json"):
-        body = (json.dumps(data) if content_type == "application/json" else data).encode()
+        body = json.dumps(data).encode() if content_type == "application/json" else data if isinstance(data,bytes) else data.encode()
         self.send_response(code)
-        self.send_header("Content-Type", content_type + "; charset=utf-8")
+        self.send_header("Content-Type", content_type + ("" if content_type.startswith('image/png') else "; charset=utf-8"))
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -520,7 +521,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {"error": "Use the local URL printed by the app."})
         if self.path == "/api/state":
             app=self.server.workspace
-            return self.send(200,{**app.store.state(),"collectors":app.collectors.connections(),"collector_catalog":CATALOG,"keychain_available":app.collectors.vault.keychain is not None})
+            return self.send(200,{**app.store.state(),"collectors":app.collectors.connections(),"collector_catalog":CATALOG,"keychain_available":app.collectors.vault.keychain is not None,"png_available":shutil.which('rsvg-convert') is not None})
+        if urlsplit(self.path).path in ('/api/original-diagram.svg','/api/original-diagram.png'):
+            try:
+                params=parse_qs(urlsplit(self.path).query,keep_blank_values=True)
+                if set(params)-{'site','redacted','v'} or any(len(values)!=1 for values in params.values()):raise ValueError('Invalid diagram request.')
+                if params.get('redacted',['0'])[0] not in ('0','1'):raise ValueError('Invalid redaction option.')
+                site=site_id(params.get('site',[''])[0])
+                self.server.workspace.store.get_site(site)
+                svg=discovered_diagram.render(self.server.workspace.store.state(),site,params.get('redacted',['0'])[0]=='1')
+                if urlsplit(self.path).path.endswith('.png'):
+                    return self.send(200,discovered_diagram.png(svg),'image/png')
+                return self.send(200,svg,'image/svg+xml')
+            except ValueError as error:return self.send(400,{'error':clean(error,300)})
         if urlsplit(self.path).path == '/api/events':
             if self.headers.get('X-Labmap-Token')!=self.server.workspace.token:
                 return self.send(403,{'error':'Refresh the local app to view scan output.'})

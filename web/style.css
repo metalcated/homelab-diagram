@@ -591,3 +591,12 @@
 .output-error .output-level{color:#f19b9b}
 .output-complete .output-level{color:var(--teal)}
 @media(max-width:720px){.tabs{gap:18px;overflow:auto}.tabs button{font-size:13px}.output-panel{padding:12px}.output-toolbar{gap:12px}.output-event summary,.output-line{grid-template-columns:88px minmax(0,1fr);gap:6px 10px}.output-message{grid-column:1/-1}.output-event pre{margin:0 12px 12px}.output-toolbar>label:first-child{min-width:0;width:100%;max-width:none}.output-events{max-height:460px}}
+
+#diagram-dialog{width:min(1500px,96vw);max-width:96vw;padding:24px}
+.diagram-toolbar,.diagram-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.diagram-toolbar{justify-content:space-between;margin:18px 0 10px}
+.diagram-toolbar .checkbox{margin:0}
+.diagram-download{display:inline-flex;align-items:center;text-decoration:none;border:1px solid var(--line);border-radius:7px;padding:9px 15px;font-weight:600}
+.diagram-viewport{height:65vh;overflow:auto;background:#0b0f15;border:1px solid var(--line);border-radius:8px;margin-top:12px}
+.diagram-viewport img{display:block;width:100%;max-width:none;height:auto}
+@media(max-width:720px){#diagram-dialog{padding:16px}.topbar{height:auto;min-height:72px;gap:12px;flex-wrap:wrap;padding:12px 0}.topbar>div{flex-wrap:wrap}.diagram-viewport{height:60vh}}

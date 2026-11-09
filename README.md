@@ -21,8 +21,14 @@ corrections are saved in a local SQLite database; the UI does not use localStora
 The workspace uses Python's standard library and an existing Nmap installation.
 No lab scan starts until its plan is confirmed in the WebUI.
 
+Choose **Original-style diagram** to generate folder-card SVG/PNG output directly
+from the site's collected inventory. Proxmox guests are grouped inside their
+reported host automatically. The preview supports zoom, downloads, and hiding
+names and addresses; it does not require copying YAML or assigning each guest.
+
 See [DISCOVERY.md](DISCOVERY.md) for usage, privacy, limitations, and tests.
-The original YAML renderer and example below remain available unchanged.
+The original YAML renderer and example below remain available. The automatic
+layout is also accessible with `python3 build.py --discovered-db private/labmap.sqlite --site home`.
 
 ## What it shows
 

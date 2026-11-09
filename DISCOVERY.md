@@ -67,14 +67,47 @@ continued presence is not proof that a connection still exists.
 SQLite defaults to `private/labmap.sqlite`; `--db /path/to/inventory.sqlite` selects
 another database. New database files use mode 0600 and new containing directories
 use mode 0700. The `private/` and `out/` directories are ignored by Git. Keep custom
-database paths and exported diagrams out of public commits. Exported SVG is a
-private snapshot and is **not redacted**. It contains observed IPs and names.
+database paths and exported diagrams out of public commits. **Canvas SVG** is a
+private snapshot containing observed IPs and names. The original-style preview
+has a separate **Hide names and addresses** option that also hides model and CPU
+labels. Review any exported diagram before publishing it.
 
 The app does not use localStorage. Browser requests that change data require a
 per-launch token, and mismatched Host/Origin requests are refused. Direct collector credentials can be kept for the session or explicitly saved
-in macOS Keychain; they are never stored in SQLite. The existing `inventory.yaml`, `build.py`,
-and icon workflow remain unchanged; the original hand-placed renderer does not
-consume the discovery database yet.
+in macOS Keychain; they are never stored in SQLite. The original YAML layout
+and icon workflow remain available. The automatic diagram reads the discovery
+database without rewriting `inventory.yaml` or its hand-placed coordinates.
+
+## Original-style diagram
+
+Select a site, then click **Original-style diagram** in the top bar. The preview
+uses the original project's palette, folder cards and bundled icons with a new
+automatic layout. Proxmox guests appear inside their reported host, including
+guests with no IP address. Unplaced guests and assets with unknown roles remain
+visible separately. Manual names, roles and models apply to the diagram too.
+Physical lines require existing manual cable evidence; reported neighbors and
+forwarding entries remain dashed. Colors identify saved network scopes when an
+asset has an address in that scope.
+
+Use **Fit width**, **+** and **−** to inspect a large diagram. **Download SVG**
+produces a scalable snapshot; **Download PNG** uses an existing `rsvg-convert`
+installation, when available. The app does not install it automatically. Choose
+**Hide names and addresses** before either download to generate the redacted
+variant. Opening the preview or exporting does not start a scan, write inventory,
+or load remote icons. Close and reopen the preview after collecting more data.
+
+The same layout can be rendered from the original build entry point:
+
+```sh
+python3 build.py --discovered-db private/labmap.sqlite --site home --out out
+python3 build.py --discovered-db private/labmap.sqlite --site home --out out --redacted
+```
+
+This path uses Python's standard library for SVG and opens the database read-only.
+Add `--svg-only` to skip PNG conversion. Outputs are named
+`home-original-style-private.svg` / `.png` or `home-original-style-redacted.svg`
+/ `.png`. Running `python3 build.py` without the discovery option still uses the
+original YAML layout and its existing dependencies.
 
 ## Preview and checks
 
