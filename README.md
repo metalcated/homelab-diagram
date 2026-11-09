@@ -21,7 +21,8 @@ corrections are saved in a local SQLite database; the UI does not use localStora
 The workspace uses Python's standard library and an existing Nmap installation.
 No lab scan starts until its plan is confirmed in the WebUI.
 
-Choose **Original-style diagram** to generate folder-card SVG/PNG output directly
+Use **Your lab diagram** above the network canvas: choose **View diagram** or
+download PNG/SVG directly. This generates folder-card output
 from the site's collected inventory. Proxmox guests are grouped inside their
 reported host automatically. The preview supports zoom, downloads, and hiding
 names and addresses; it does not require copying YAML or assigning each guest.

@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const escapeHTML = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const token = document.querySelector('meta[name="labmap-token"]').content;
 let state = {sites:[],hosts:[],links:[],jobs:[],runs:[]}, selected = null, currentPlan = null, zoom = 1, panX = 0, panY = 0;
-let refreshPending = null, collectionReview = 0;
+let refreshPending = null, collectionReview = 0, watchedJob=null;
 let activeTab='devices', outputJob=null, outputCursor=0, outputGeneration=0, outputBusy=false, outputFinished=false;
 let outputAbort=null, tokenPasteWasUuid=false;
 
@@ -63,13 +63,16 @@ function render() {
   if (!site) return;
   const running = state.jobs.some(j => j.status === 'running');
   $('collect-inventory').disabled=running||!(state.collectors||[]).some(c=>c.site===selected&&c.enabled);
+  $('result-collect').disabled=$('collect-inventory').disabled;
   $('scan').disabled = running || !state.nmap_available;
   $('scan').textContent = running ? 'Discovery running…' : 'Review scan';
   $('scan').title = state.nmap_available ? '' : 'Nmap is unavailable. Import existing results or install Nmap separately.';
   $('add-link').disabled = currentHosts().length < 2;
   $('counts').textContent = `${currentHosts().length} assets / ${currentLinks().length} relationships`;
-  renderCanvas(); renderTables();
+  renderDiagramResult();renderCanvas(); renderTables();
   renderOutputJobs();
+  const finished=state.jobs.find(j=>j.id===watchedJob&&j.status!=='running');
+  if(finished){watchedJob=null;if(finished.site===selected)notice(diagramResultMessage(finished,siteAssets().length>0),['failed','interrupted'].includes(finished.status));}
 }
 function renderCanvas() {
   const hosts = currentHosts(), links = currentLinks();
@@ -149,6 +152,7 @@ $('start-scan').addEventListener('click',async()=>{
   $('start-scan').disabled=true;$('collection-select').disabled=true;
   try{
     const result=await api('scan',{plan_id:currentPlan.id,confirmed:true});$('scan-dialog').close();
+    watchedJob=result.job;
     notice('Collection started. Live output shows requests, responses and errors as they happen.');
     await refresh(true);resetOutput(result.job);renderOutputJobs();selectTab('output');$('output-panel').scrollIntoView({block:'start'});
   }
@@ -198,6 +202,7 @@ function renderOutputJobs(){
   const options=jobs.map(j=>`<option value="${escapeHTML(j.id)}">${escapeHTML(j.started.slice(0,19).replace('T',' '))} UTC / ${escapeHTML(j.status)}</option>`).join('');
   if($('output-job').innerHTML!==options)$('output-job').innerHTML=options;
   $('output-job').value=outputJob||'';$('output-job').disabled=!jobs.length;
+  renderOutputResult(jobs.find(j=>j.id===outputJob));
   if(activeTab==='output')refreshOutput();
 }
 async function refreshOutput(){
@@ -231,6 +236,7 @@ async function refreshOutput(){
       $('output-status').textContent=stream.childElementCount?status:data.job.status==='running'?'Waiting for the first event…':'No detailed output was recorded for this scan.';
       if($('output-follow').checked)stream.scrollTop=stream.scrollHeight;
       outputFinished=data.job.status!=='running'&&!data.has_more;
+      if(outputFinished)await refresh();
       if(!data.has_more)break;
     }
   }catch(error){
@@ -360,9 +366,49 @@ async function loadDiagram(){
     $('diagram-dialog').querySelector('.form-error').textContent=error.message;
   }
 }
-$('original-diagram').addEventListener('click',()=>{zoomDiagram(100);openDialog('diagram-dialog');loadDiagram();});
-$('diagram-redacted').addEventListener('change',loadDiagram);
+function openDiagram(){
+  $('diagram-redacted').checked=$('result-redacted').checked;
+  zoomDiagram(100);openDialog('diagram-dialog');loadDiagram();
+}
+$('original-diagram').addEventListener('click',openDiagram);
+$('output-view-diagram').addEventListener('click',openDiagram);
+$('diagram-redacted').addEventListener('change',()=>{$('result-redacted').checked=$('diagram-redacted').checked;renderDiagramResult();loadDiagram();});
 $('diagram-dialog').addEventListener('close',clearDiagram);
 $('diagram-fit').addEventListener('click',()=>zoomDiagram(100));
 $('diagram-zoom-in').addEventListener('click',()=>zoomDiagram(diagramZoom+25));
 $('diagram-zoom-out').addEventListener('click',()=>zoomDiagram(diagramZoom-25));
+
+function siteAssets(){return (state.assets||state.hosts).filter(a=>a.site===selected);}
+function diagramResultMessage(job,hasAssets){
+  if(job?.status==='running')return 'Collection is running. The diagram currently shows the inventory already saved.';
+  if(job?.status==='failed'||job?.status==='interrupted')return hasAssets?'This collection did not complete. View the diagram from saved inventory, and check Live output for the error.':'This collection did not complete. Check Live output, correct the collector and retry.';
+  if(!hasAssets)return 'Connect a collector, then collect inventory to build your diagram.';
+  if(job?.status==='partial')return 'Collection finished with gaps. View your diagram from saved inventory, and check Live output for missing data.';
+  return job?.status==='complete'?'Collection complete. Use View diagram or choose a download.':'Your saved inventory is ready. Use View diagram or choose a download.';
+}
+function renderDiagramResult(){
+  const assets=siteAssets(),hasAssets=assets.length>0,job=state.jobs.find(j=>j.site===selected);
+  const counts=['Proxmox host','VM','Container'].map(role=>assets.filter(a=>(a.role||a.auto_role)===role).length);
+  const counted=(count,noun)=>`${count} ${noun}${count===1?'':'s'}`;
+  $('diagram-result-summary').textContent=hasAssets?`${counted(counts[0],'host')}, ${counted(counts[1],'VM')}, ${counted(counts[2],'container')} and ${counted(assets.length,'asset')} in total. Built automatically from saved inventory.`:'Your collected hosts, guests and network devices will appear in the finished diagram.';
+  $('diagram-result-status').textContent=diagramResultMessage(job,hasAssets);
+  $('diagram-result').dataset.status=job?.status||'saved';
+  $('original-diagram').disabled=!hasAssets;
+  const redacted=$('result-redacted').checked,params=new URLSearchParams({site:selected,redacted:redacted?'1':'0'});
+  for(const format of ['png','svg']){
+    const link=$('result-'+format),available=hasAssets&&(format==='svg'||state.png_available);
+    link.classList.toggle('hidden',!available);
+    if(available){link.href='/api/original-diagram.'+format+'?'+params;link.download=selected+'-original-style-'+(redacted?'redacted':'private')+'.'+format;}
+    else link.removeAttribute('href');
+  }
+  $('result-privacy').textContent=(redacted?'Downloads hide names and addresses.':'Downloads include names and addresses.')+(hasAssets&&!state.png_available?' PNG is unavailable on this Mac; use SVG.':'');
+}
+function renderOutputResult(job){
+  const hasAssets=siteAssets().length>0;
+  $('output-result').classList.toggle('hidden',!job||job.status==='running');
+  $('output-result-status').textContent=job?diagramResultMessage(job,hasAssets)+' The diagram uses the current saved inventory.':'';
+  $('output-view-diagram').disabled=!hasAssets;
+}
+$('result-collectors').addEventListener('click',()=>$('manage-collectors').click());
+$('result-collect').addEventListener('click',()=>$('collect-inventory').click());
+$('result-redacted').addEventListener('change',renderDiagramResult);

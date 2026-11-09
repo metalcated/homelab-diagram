@@ -80,7 +80,14 @@ database without rewriting `inventory.yaml` or its hand-placed coordinates.
 
 ## Original-style diagram
 
-Select a site, then click **Original-style diagram** in the top bar. The preview
+Select a site, then use the **Your lab diagram** section above the network canvas.
+Click **View diagram** to open the preview, or **Download PNG** / **Download SVG**
+to save the result directly. The section shows the saved host, VM and container
+totals and the latest collection's status. Its steps link to collector setup,
+collection review, and the finished output. When collection finishes, **Live
+output** also offers **View diagram**, so the result is accessible from the scan.
+Partial or failed collections identify gaps and keep prior saved inventory
+available; they are not described as successful. The preview
 uses the original project's palette, folder cards and bundled icons with a new
 automatic layout. Proxmox guests appear inside their reported host, including
 guests with no IP address. Unplaced guests and assets with unknown roles remain
@@ -93,7 +100,8 @@ Use **Fit width**, **+** and **−** to inspect a large diagram. **Download SVG*
 produces a scalable snapshot; **Download PNG** uses an existing `rsvg-convert`
 installation, when available. The app does not install it automatically. Choose
 **Hide names and addresses** before either download to generate the redacted
-variant. Opening the preview or exporting does not start a scan, write inventory,
+variant. This option is shared by the result section and its preview. Opening
+the preview or exporting does not start a scan, write inventory,
 or load remote icons. Close and reopen the preview after collecting more data.
 
 The same layout can be rendered from the original build entry point:
